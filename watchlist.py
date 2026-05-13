@@ -1,0 +1,248 @@
+"""
+================================================================================
+我的觀察清單 (Watchlist) 模組
+================================================================================
+功能:
+  - 儲存使用者自選的公司清單到本地 JSON
+  - 支援分組(例如:科技股、金融股、長期持有)
+  - 自動驗證股票代號是否有效
+  - 紀錄加入日期、自訂備註
+================================================================================
+"""
+
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Optional
+import pandas as pd
+
+
+# 清單存檔位置(與 app.py 同目錄)
+WATCHLIST_FILE = Path(__file__).parent / 'watchlist.json'
+
+
+def _load_raw() -> Dict:
+    """讀取清單檔(若不存在則建立預設結構)。"""
+    if not WATCHLIST_FILE.exists():
+        return {
+            'groups': {
+                'Default': []  # 預設群組
+            },
+            'last_updated': None,
+        }
+    try:
+        with open(WATCHLIST_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {'groups': {'Default': []}, 'last_updated': None}
+
+
+def _save_raw(data: Dict):
+    """寫入清單檔。"""
+    data['last_updated'] = datetime.now().isoformat()
+    with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ============================================================================
+# 公開 API
+# ============================================================================
+
+def get_all_groups() -> List[str]:
+    """取得所有群組名稱。"""
+    return list(_load_raw()['groups'].keys())
+
+
+def get_tickers(group: str = None) -> List[str]:
+    """取得清單上所有股票代號。
+    Args:
+        group: 群組名稱,None 表示所有群組合併。
+    """
+    data = _load_raw()
+    if group is None:
+        # 合併所有群組,去重
+        all_tickers = set()
+        for tickers in data['groups'].values():
+            for item in tickers:
+                all_tickers.add(item['ticker'])
+        return sorted(all_tickers)
+    return [item['ticker'] for item in data['groups'].get(group, [])]
+
+
+def get_watchlist_df(group: str = None) -> pd.DataFrame:
+    """以 DataFrame 形式回傳完整清單(含備註、加入日期)。"""
+    data = _load_raw()
+    rows = []
+    groups_to_iter = [group] if group else data['groups'].keys()
+    for g in groups_to_iter:
+        for item in data['groups'].get(g, []):
+            rows.append({
+                'Group': g,
+                'Ticker': item['ticker'],
+                'AddedDate': item.get('added_date', ''),
+                'Note': item.get('note', ''),
+            })
+    return pd.DataFrame(rows)
+
+
+def add_ticker(ticker: str, group: str = 'Default', note: str = '') -> tuple[bool, str]:
+    """新增一檔股票到指定群組。
+
+    Returns: (success, message)
+    """
+    ticker = ticker.strip().upper().replace('.', '-')
+    if not ticker:
+        return False, "代號不可空白"
+
+    data = _load_raw()
+    if group not in data['groups']:
+        data['groups'][group] = []
+
+    # 檢查是否已存在
+    existing = [item['ticker'] for item in data['groups'][group]]
+    if ticker in existing:
+        return False, f"{ticker} 已經在 「{group}」 群組中"
+
+    data['groups'][group].append({
+        'ticker': ticker,
+        'added_date': datetime.now().strftime('%Y-%m-%d'),
+        'note': note,
+    })
+    _save_raw(data)
+    return True, f"✓ {ticker} 已加入「{group}」"
+
+
+def add_multiple(tickers_str: str, group: str = 'Default') -> Dict:
+    """一次新增多檔(逗號或換行分隔)。"""
+    raw = tickers_str.replace('\n', ',').replace(';', ',')
+    tickers = [t.strip().upper() for t in raw.split(',') if t.strip()]
+
+    added, skipped = [], []
+    for t in tickers:
+        ok, msg = add_ticker(t, group)
+        if ok:
+            added.append(t)
+        else:
+            skipped.append((t, msg))
+    return {'added': added, 'skipped': skipped}
+
+
+def remove_ticker(ticker: str, group: str = None) -> tuple[bool, str]:
+    """從清單移除一檔股票。
+    Args:
+        group: 指定群組;None 則從所有群組中移除。
+    """
+    ticker = ticker.strip().upper()
+    data = _load_raw()
+    removed_from = []
+
+    groups_to_check = [group] if group else list(data['groups'].keys())
+    for g in groups_to_check:
+        before = len(data['groups'].get(g, []))
+        data['groups'][g] = [item for item in data['groups'].get(g, [])
+                              if item['ticker'] != ticker]
+        if len(data['groups'].get(g, [])) < before:
+            removed_from.append(g)
+
+    if removed_from:
+        _save_raw(data)
+        return True, f"✓ {ticker} 已從 {', '.join(removed_from)} 移除"
+    return False, f"{ticker} 不在清單中"
+
+
+def update_note(ticker: str, note: str, group: str = None) -> bool:
+    """更新某檔股票的備註。"""
+    data = _load_raw()
+    updated = False
+    groups_to_check = [group] if group else list(data['groups'].keys())
+    for g in groups_to_check:
+        for item in data['groups'].get(g, []):
+            if item['ticker'] == ticker.upper():
+                item['note'] = note
+                updated = True
+    if updated:
+        _save_raw(data)
+    return updated
+
+
+def create_group(group_name: str) -> tuple[bool, str]:
+    """建立新群組。"""
+    group_name = group_name.strip()
+    if not group_name:
+        return False, "群組名稱不可空白"
+    data = _load_raw()
+    if group_name in data['groups']:
+        return False, f"群組「{group_name}」已存在"
+    data['groups'][group_name] = []
+    _save_raw(data)
+    return True, f"✓ 已建立群組「{group_name}」"
+
+
+def delete_group(group_name: str) -> tuple[bool, str]:
+    """刪除群組(連同其中所有股票)。Default 群組不可刪。"""
+    if group_name == 'Default':
+        return False, "Default 群組不可刪除"
+    data = _load_raw()
+    if group_name not in data['groups']:
+        return False, f"群組「{group_name}」不存在"
+    n = len(data['groups'][group_name])
+    del data['groups'][group_name]
+    _save_raw(data)
+    return True, f"✓ 已刪除群組「{group_name}」(原有 {n} 檔股票)"
+
+
+def export_csv() -> str:
+    """匯出整份清單為 CSV 字串。"""
+    df = get_watchlist_df()
+    return df.to_csv(index=False)
+
+
+def import_csv(csv_text: str) -> Dict:
+    """從 CSV 文字匯入(欄位:Group, Ticker, Note)。"""
+    from io import StringIO
+    try:
+        df = pd.read_csv(StringIO(csv_text))
+    except Exception as e:
+        return {'error': str(e)}
+    added = []
+    for _, row in df.iterrows():
+        group = str(row.get('Group', 'Default')).strip() or 'Default'
+        ticker = str(row.get('Ticker', '')).strip().upper()
+        note = str(row.get('Note', ''))
+        if ticker:
+            ok, _ = add_ticker(ticker, group, note)
+            if ok:
+                added.append(ticker)
+    return {'added': added, 'count': len(added)}
+
+
+def get_stats() -> Dict:
+    """清單統計。"""
+    data = _load_raw()
+    total = sum(len(v) for v in data['groups'].values())
+    return {
+        'total_tickers': total,
+        'unique_tickers': len(get_tickers()),
+        'n_groups': len(data['groups']),
+        'groups_summary': {g: len(v) for g, v in data['groups'].items()},
+        'last_updated': data.get('last_updated', 'never'),
+    }
+
+
+if __name__ == '__main__':
+    # 測試
+    print("=== 初始狀態 ===")
+    print(get_stats())
+
+    print("\n=== 加入測試 ===")
+    print(add_ticker('AAPL', 'Tech', '長期持有'))
+    print(add_ticker('MSFT', 'Tech', ''))
+    print(add_ticker('JPM', 'Finance', ''))
+    print(add_multiple('GOOGL, AMZN, META', 'Tech'))
+
+    print("\n=== 目前清單 ===")
+    print(get_watchlist_df())
+
+    print("\n=== 統計 ===")
+    print(get_stats())
