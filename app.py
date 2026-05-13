@@ -57,10 +57,11 @@ with st.sidebar:
 
     st.divider()
     st.subheader("⚙️ API 設定")
-    fred_key = st.text_input("FRED API Key (選填)", type="password",
-                              value=os.environ.get('FRED_API_KEY', ''))
-    claude_key = st.text_input("Anthropic API Key (選填)", type="password",
-                                value=os.environ.get('ANTHROPIC_API_KEY', ''))
+    default_fred = st.secrets.get('FRED_API_KEY', os.environ.get('FRED_API_KEY', ''))
+    default_claude = st.secrets.get('ANTHROPIC_API_KEY', os.environ.get('ANTHROPIC_API_KEY', ''))
+
+fred_key = st.text_input("FRED API Key (選填)", type="password", value=default_fred)
+claude_key = st.text_input("Anthropic API Key (選填)", type="password", value=default_claude)
     if fred_key:
         os.environ['FRED_API_KEY'] = fred_key
     if claude_key:
