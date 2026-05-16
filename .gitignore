@@ -20,3 +20,4 @@ watchlist.json
 
 # Streamlit
 .streamlit/secrets.toml
+.github/
