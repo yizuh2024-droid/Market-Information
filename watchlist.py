@@ -73,7 +73,7 @@ def get_tickers(group: str = None) -> List[str]:
 
 
 def get_watchlist_df(group: str = None) -> pd.DataFrame:
-    """以 DataFrame 形式回傳完整清單(含備註、加入日期)。"""
+    """以 DataFrame 形式回傳完整清單(含備註、加入日期、公司名、logo)。"""
     data = _load_raw()
     rows = []
     groups_to_iter = [group] if group else data['groups'].keys()
@@ -84,12 +84,22 @@ def get_watchlist_df(group: str = None) -> pd.DataFrame:
                 'Ticker': item['ticker'],
                 'AddedDate': item.get('added_date', ''),
                 'Note': item.get('note', ''),
+                'FullName': item.get('full_name', ''),
+                'LogoURL': item.get('logo_url', ''),
             })
     return pd.DataFrame(rows)
 
 
-def add_ticker(ticker: str, group: str = 'Default', note: str = '') -> tuple[bool, str]:
+def add_ticker(ticker: str, group: str = 'Default', note: str = '',
+               full_name: str = '', logo_url: str = '') -> tuple[bool, str]:
     """新增一檔股票到指定群組。
+
+    Args:
+        ticker: 股票代號
+        group: 群組名稱
+        note: 備註
+        full_name: 公司全名(顯示用)
+        logo_url: 公司 logo URL(顯示用)
 
     Returns: (success, message)
     """
@@ -101,7 +111,6 @@ def add_ticker(ticker: str, group: str = 'Default', note: str = '') -> tuple[boo
     if group not in data['groups']:
         data['groups'][group] = []
 
-    # 檢查是否已存在
     existing = [item['ticker'] for item in data['groups'][group]]
     if ticker in existing:
         return False, f"{ticker} 已經在 「{group}」 群組中"
@@ -110,6 +119,8 @@ def add_ticker(ticker: str, group: str = 'Default', note: str = '') -> tuple[boo
         'ticker': ticker,
         'added_date': datetime.now().strftime('%Y-%m-%d'),
         'note': note,
+        'full_name': full_name,
+        'logo_url': logo_url,
     })
     _save_raw(data)
     return True, f"✓ {ticker} 已加入「{group}」"
@@ -151,6 +162,39 @@ def remove_ticker(ticker: str, group: str = None) -> tuple[bool, str]:
         _save_raw(data)
         return True, f"✓ {ticker} 已從 {', '.join(removed_from)} 移除"
     return False, f"{ticker} 不在清單中"
+
+
+def remove_multiple(tickers: List[str], group: str = None) -> tuple[int, List[str]]:
+    """批次移除多檔股票。
+    
+    Args:
+        tickers: 要移除的代號列表
+        group: 指定群組;None 則從所有群組中移除
+    
+    Returns:
+        (成功移除筆數, 移除的代號列表)
+    """
+    data = _load_raw()
+    removed = []
+    groups_to_check = [group] if group else list(data['groups'].keys())
+    
+    targets = set(t.strip().upper() for t in tickers if t.strip())
+    for g in groups_to_check:
+        if g not in data['groups']:
+            continue
+        before = len(data['groups'][g])
+        kept = []
+        for item in data['groups'][g]:
+            if item['ticker'] in targets:
+                if item['ticker'] not in removed:
+                    removed.append(item['ticker'])
+            else:
+                kept.append(item)
+        data['groups'][g] = kept
+    
+    if removed:
+        _save_raw(data)
+    return len(removed), removed
 
 
 def update_note(ticker: str, note: str, group: str = None) -> bool:
