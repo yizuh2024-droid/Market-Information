@@ -1,0 +1,63 @@
+name: CI Tests
+
+# 觸發時機:推到 main 分支、或開 Pull Request 時自動跑
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # 也能手動觸發
+
+jobs:
+  test:
+    runs-on: ubuntu-latest  # 用 Ubuntu 環境跑(免費)
+
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']  # 測試兩個 Python 版本
+
+    steps:
+      # 1. 取得程式碼
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 設定 Python
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      # 3. 安裝相依套件
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      # 4. 語法檢查(快速,先檢查所有 .py 檔)
+      - name: Syntax check
+        run: |
+          python -m py_compile app.py
+          python -m py_compile watchlist.py
+          python -m py_compile data_calendar.py
+          python -m py_compile data_earnings.py
+          python -m py_compile data_fred.py
+          python -m py_compile analyzer.py
+
+      # 5. Import 測試(確認所有模組能載入)
+      - name: Import test
+        run: |
+          python -c "import watchlist; import data_calendar; import data_earnings; import data_fred; import analyzer; print('✓ All modules import successfully')"
+
+      # 6. 跑單元測試
+      - name: Run unit tests
+        run: pytest tests/ -v
+
+      # 7. Streamlit 啟動測試(確認 app.py 能正常啟動,5 秒後關閉)
+      - name: Streamlit smoke test
+        run: |
+          timeout 15 streamlit run app.py --server.headless true --server.port 8501 &
+          sleep 10
+          curl -f http://localhost:8501/_stcore/health || exit 1
+          echo "✓ Streamlit started successfully"

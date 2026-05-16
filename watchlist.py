@@ -23,19 +23,21 @@ WATCHLIST_FILE = Path(__file__).parent / 'watchlist.json'
 
 
 def _load_raw() -> Dict:
-    """讀取清單檔(若不存在則建立預設結構)。"""
+    """讀取清單檔(若不存在則建立空結構)。"""
     if not WATCHLIST_FILE.exists():
         return {
-            'groups': {
-                'Default': []  # 預設群組
-            },
+            'groups': {},   # 空的,第一次使用時請使用者自行命名
             'last_updated': None,
         }
     try:
         with open(WATCHLIST_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        # 確保 groups 存在
+        if 'groups' not in data:
+            data['groups'] = {}
+        return data
     except (json.JSONDecodeError, FileNotFoundError):
-        return {'groups': {'Default': []}, 'last_updated': None}
+        return {'groups': {}, 'last_updated': None}
 
 
 def _save_raw(data: Dict):
@@ -180,9 +182,7 @@ def create_group(group_name: str) -> tuple[bool, str]:
 
 
 def delete_group(group_name: str) -> tuple[bool, str]:
-    """刪除群組(連同其中所有股票)。Default 群組不可刪。"""
-    if group_name == 'Default':
-        return False, "Default 群組不可刪除"
+    """刪除群組(連同其中所有股票)。"""
     data = _load_raw()
     if group_name not in data['groups']:
         return False, f"群組「{group_name}」不存在"
@@ -190,6 +190,25 @@ def delete_group(group_name: str) -> tuple[bool, str]:
     del data['groups'][group_name]
     _save_raw(data)
     return True, f"✓ 已刪除群組「{group_name}」(原有 {n} 檔股票)"
+
+
+def rename_group(old_name: str, new_name: str) -> tuple[bool, str]:
+    """重新命名群組。"""
+    new_name = new_name.strip()
+    if not new_name:
+        return False, "新名稱不可空白"
+    data = _load_raw()
+    if old_name not in data['groups']:
+        return False, f"群組「{old_name}」不存在"
+    if new_name in data['groups'] and new_name != old_name:
+        return False, f"群組「{new_name}」已存在"
+    # 保留順序的重命名
+    new_groups = {}
+    for k, v in data['groups'].items():
+        new_groups[new_name if k == old_name else k] = v
+    data['groups'] = new_groups
+    _save_raw(data)
+    return True, f"✓ 已將「{old_name}」重新命名為「{new_name}」"
 
 
 def export_csv() -> str:

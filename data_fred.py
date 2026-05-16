@@ -140,6 +140,88 @@ def compute_changes(df: pd.DataFrame) -> dict:
     return result
 
 
+def get_historical_context(name: str, lookback_years: int = 10) -> dict:
+    """取得指標的長期歷史脈絡:近期 vs 歷史平均 vs 極端值。
+    用於 AI 分析時提供「現在的數字是高還是低」的參考。"""
+    try:
+        df = get_indicator(name, limit=lookback_years * 12)
+        if df.empty:
+            return {}
+
+        values = df['value'].dropna()
+        latest = values.iloc[-1]
+
+        context = {
+            'latest': round(latest, 3),
+            'latest_date': df['date'].iloc[-1].strftime('%Y-%m-%d'),
+            'lookback_years': lookback_years,
+            'historical_mean': round(values.mean(), 3),
+            'historical_median': round(values.median(), 3),
+            'historical_std': round(values.std(), 3),
+            'all_time_high': round(values.max(), 3),
+            'all_time_low': round(values.min(), 3),
+            'percentile': round((values < latest).mean() * 100, 1),  # 百分位
+        }
+
+        # Z-score 偏離程度
+        if context['historical_std'] > 0:
+            context['z_score'] = round(
+                (latest - context['historical_mean']) / context['historical_std'], 2
+            )
+
+        # 近 12 個月趨勢
+        if len(values) >= 12:
+            last_12 = values.iloc[-12:]
+            context['recent_12m_trend'] = '上升' if last_12.iloc[-1] > last_12.iloc[0] else '下降'
+            context['recent_12m_change'] = round(last_12.iloc[-1] - last_12.iloc[0], 3)
+
+        # 對比 1 年前、3 年前、5 年前
+        for years_ago in [1, 3, 5]:
+            target = df['date'].iloc[-1] - pd.DateOffset(years=years_ago)
+            past_row = df[df['date'] <= target].tail(1)
+            if not past_row.empty:
+                past_val = past_row.iloc[0]['value']
+                context[f'{years_ago}y_ago_value'] = round(past_val, 3)
+                if past_val:
+                    context[f'{years_ago}y_change_pct'] = round(
+                        (latest / past_val - 1) * 100, 2
+                    )
+
+        return context
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def get_cross_indicator_snapshot() -> dict:
+    """跨指標即時對照表 — 給 AI 一個「當前宏觀環境」的完整輪廓。"""
+    indicators_to_pull = [
+        'CPI', 'Core_PCE', 'Unemployment', 'NFP',
+        'Fed_Funds_Rate', 'DGS10', 'DGS2', 'GDP',
+        'Retail_Sales', 'Industrial_Prod', 'VIX'
+    ]
+    result = {}
+    for ind in indicators_to_pull:
+        try:
+            df = get_indicator(ind, limit=24)
+            stats = compute_changes(df)
+            if stats:
+                result[ind] = {
+                    'value': round(stats['latest_value'], 3),
+                    'date': stats['latest_date'],
+                    'yoy_pct': round(stats.get('yoy_pct', 0), 2) if stats.get('yoy_pct') else None,
+                }
+        except Exception:
+            continue
+
+    # 計算殖利率曲線 (2s10s)
+    if 'DGS10' in result and 'DGS2' in result:
+        result['Yield_Curve_2s10s'] = round(
+            result['DGS10']['value'] - result['DGS2']['value'], 3
+        )
+
+    return result
+
+
 def get_macro_dashboard() -> pd.DataFrame:
     """一鍵抓所有主要宏觀指標,彙總成儀表板。"""
     rows = []
