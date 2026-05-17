@@ -22,7 +22,9 @@ from data_earnings import (get_earnings_calendar, get_dividend_calendar,
 from data_fred import get_indicator, get_macro_dashboard, FRED_SERIES, compute_changes
 from analyzer import (analyze_macro_release, analyze_fomc_meeting, analyze_earnings,
                        deep_analysis_with_claude, quick_summary_macro)
+from data_search import search_tickers, validate_ticker, search_with_source
 import watchlist as wl
+import saved_analyses as sa
 
 
 # ============================================================================
@@ -54,6 +56,11 @@ with st.sidebar:
         groups_text = " · ".join(f"{g}: {n}" for g, n in stats['groups_summary'].items() if n > 0)
         if groups_text:
             st.caption(groups_text)
+
+    # 已儲存分析計數
+    sa_stats = sa.get_stats()
+    if sa_stats['total'] > 0:
+        st.caption(f"📚 已儲存分析:{sa_stats['total']} 筆")
 
     st.divider()
     st.subheader("⚙️ API 設定")
@@ -148,55 +155,176 @@ with tab1:
             if df.empty:
                 st.info("這個清單是空的。在右邊新增股票吧。")
             else:
+                # === 多選刪除介面 ===
+                st.caption(f"清單共 {len(df)} 檔 · 勾選想刪除的股票後點「刪除選取項目」")
+
+                # 建立顯示用 DataFrame:有 logo、可勾選
+                display_df = df[['Ticker', 'FullName', 'Note', 'AddedDate', 'LogoURL']].copy()
+                display_df.insert(0, 'Delete', False)
+                display_df = display_df.rename(columns={
+                    'LogoURL': 'Logo',
+                    'FullName': 'Company',
+                    'Delete': '刪除',
+                    'AddedDate': '加入日期',
+                    'Note': '備註',
+                })
+
                 edited = st.data_editor(
-                    df[['Ticker', 'Note', 'AddedDate']],
+                    display_df,
                     use_container_width=True,
                     hide_index=True,
-                    disabled=['Ticker', 'AddedDate'],
+                    disabled=['Ticker', 'Company', '加入日期', 'Logo'],
+                    column_config={
+                        '刪除': st.column_config.CheckboxColumn(
+                            '刪除',
+                            help='勾選後點下方「刪除選取項目」按鈕',
+                            default=False,
+                            width='small',
+                        ),
+                        'Logo': st.column_config.ImageColumn(
+                            'Logo',
+                            help='公司圖標',
+                            width='small',
+                        ),
+                        'Ticker': st.column_config.TextColumn('代號', width='small'),
+                        'Company': st.column_config.TextColumn('公司', width='medium'),
+                        '備註': st.column_config.TextColumn('備註', width='medium'),
+                        '加入日期': st.column_config.TextColumn('加入日期', width='small'),
+                    },
                     key=f'editor_{current_group}',
                 )
 
+                # 偵測備註修改
                 for i, row in edited.iterrows():
                     original_note = df.iloc[i]['Note']
-                    if row['Note'] != original_note:
-                        wl.update_note(row['Ticker'], row['Note'], current_group)
+                    if row['備註'] != original_note:
+                        wl.update_note(row['Ticker'], row['備註'], current_group)
 
-                to_remove = st.selectbox("選擇要移除的股票", [''] + df['Ticker'].tolist(),
-                                           key='remove_sel')
-                if to_remove and st.button(f"❌ 從清單移除 {to_remove}", key='remove_btn'):
-                    ok, msg = wl.remove_ticker(to_remove, current_group)
-                    st.success(msg) if ok else st.error(msg)
-                    st.rerun()
+                # 批次刪除
+                to_remove = edited[edited['刪除'] == True]['Ticker'].tolist()
+                btn_col1, btn_col2 = st.columns([1, 3])
+                with btn_col1:
+                    if to_remove:
+                        if st.button(f"❌ 刪除選取的 {len(to_remove)} 檔",
+                                      key='multi_remove_btn', type='primary'):
+                            n_removed, removed_list = wl.remove_multiple(to_remove, current_group)
+                            st.success(f"✓ 已移除 {n_removed} 檔:{', '.join(removed_list)}")
+                            st.rerun()
+                    else:
+                        st.button("❌ 刪除選取項目", disabled=True,
+                                  help='請先在表格中勾選要刪除的股票')
+                with btn_col2:
+                    if to_remove:
+                        st.caption(f"將刪除:{', '.join(to_remove)}")
 
         # --- 右欄:新增與群組管理 ---
         with col_right:
-            st.subheader("➕ 新增股票")
-            with st.form("add_ticker_form", clear_on_submit=True):
-                new_ticker = st.text_input("股票代號", placeholder="例如:AAPL")
-                new_note = st.text_input("備註(選填)", placeholder="例如:核心持股")
-                target_group = st.selectbox("加入到清單", groups, key='add_to_group')
-                submitted = st.form_submit_button("加入清單", type="primary")
-                if submitted and new_ticker:
-                    ok, msg = wl.add_ticker(new_ticker, target_group, new_note)
-                    st.success(msg) if ok else st.warning(msg)
-                    if ok:
-                        st.rerun()
+            st.subheader("➕ 智能搜尋新增")
+            st.caption("輸入代號或公司名稱,即時找到真實存在的股票")
+
+            search_query = st.text_input(
+                "搜尋股票",
+                placeholder="例:apple、nvda、Microsoft...",
+                key='search_input',
+            )
+
+            # 顯示搜尋結果
+            if search_query and len(search_query.strip()) >= 1:
+                with st.spinner("搜尋中..."):
+                    results, source = search_with_source(search_query, limit=8)
+
+                if not results:
+                    st.warning(f"😕 找不到符合「{search_query}」的股票")
+                else:
+                    # 顯示資料來源(transparency)
+                    source_label = {
+                        'yfinance': '🟢 即時 (Yahoo Finance)',
+                        'http': '🟢 即時 (HTTP)',
+                        'local': '🟡 內建資料庫(Yahoo API 暫時無法連線)',
+                    }.get(source, '')
+                    st.caption(f"來源:{source_label} · 找到 {len(results)} 個結果")
+                    target_group_search = st.selectbox(
+                        "加入到清單", groups, key='search_to_group'
+                    )
+                    new_note_search = st.text_input(
+                        "備註(選填)", key='search_note',
+                        placeholder="例:核心持股"
+                    )
+
+                    st.caption("點按鈕加入清單:")
+                    for r in results:
+                        c1, c2, c3 = st.columns([1, 4, 1])
+                        with c1:
+                            if r.get('logo_url'):
+                                st.image(r['logo_url'], width=36)
+                            else:
+                                st.markdown("📈")
+                        with c2:
+                            st.markdown(f"**{r['symbol']}** · {r['name'][:40]}")
+                            extras = []
+                            if r.get('exchange'):
+                                extras.append(r['exchange'])
+                            if r.get('type'):
+                                extras.append(r['type'])
+                            if extras:
+                                st.caption(' · '.join(extras))
+                        with c3:
+                            btn_key = f"add_{r['symbol']}_{r['exchange']}"
+                            if st.button("加入", key=btn_key, use_container_width=True):
+                                ok, msg = wl.add_ticker(
+                                    r['symbol'],
+                                    target_group_search,
+                                    new_note_search,
+                                    full_name=r['name'],
+                                    logo_url=r.get('logo_url', ''),
+                                )
+                                if ok:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.warning(msg)
 
             st.divider()
             st.subheader("📦 批次新增")
+            st.caption("直接輸入多檔代號,跳過搜尋")
             with st.form("bulk_add_form", clear_on_submit=True):
                 bulk = st.text_area("一次輸入多檔(逗號或換行分隔)",
                                      placeholder="AAPL, MSFT, NVDA\nGOOGL, AMZN",
                                      height=80)
                 bulk_group = st.selectbox("加入到清單", groups, key='bulk_group')
+                validate_on_bulk = st.checkbox("驗證每檔代號是否存在(較慢但安全)",
+                                                value=True, key='bulk_validate')
                 if st.form_submit_button("批次加入"):
                     if bulk.strip():
-                        result = wl.add_multiple(bulk, bulk_group)
-                        if result['added']:
-                            st.success(f"✓ 加入 {len(result['added'])} 檔:{', '.join(result['added'])}")
-                        if result['skipped']:
-                            for t, msg in result['skipped']:
-                                st.caption(f"⊘ {msg}")
+                        if validate_on_bulk:
+                            # 逐檔驗證
+                            raw_tickers = [t.strip().upper() for t in
+                                            bulk.replace('\n', ',').replace(';', ',').split(',')
+                                            if t.strip()]
+                            valid_added, invalid = [], []
+                            for t in raw_tickers:
+                                v = validate_ticker(t)
+                                if v.get('valid'):
+                                    ok, _ = wl.add_ticker(
+                                        v['symbol'], bulk_group, '',
+                                        full_name=v.get('name', ''),
+                                        logo_url=v.get('logo_url', ''),
+                                    )
+                                    if ok:
+                                        valid_added.append(v['symbol'])
+                                else:
+                                    invalid.append(t)
+                            if valid_added:
+                                st.success(f"✓ 加入 {len(valid_added)} 檔:{', '.join(valid_added)}")
+                            if invalid:
+                                st.warning(f"⚠ 跳過不存在的代號:{', '.join(invalid)}")
+                        else:
+                            result = wl.add_multiple(bulk, bulk_group)
+                            if result['added']:
+                                st.success(f"✓ 加入 {len(result['added'])} 檔:{', '.join(result['added'])}")
+                            if result['skipped']:
+                                for t, msg in result['skipped']:
+                                    st.caption(f"⊘ {msg}")
                         st.rerun()
 
             st.divider()
@@ -460,11 +588,60 @@ with tab3:
                 # === 6. AI 深度分析 ===
                 st.subheader("🤖 AI 深度公司分析")
                 st.caption("整合上面所有資料,做財報解讀、新聞影響、估值、未來 catalyst 的綜合分析")
-                if st.button("🚀 啟動深度分析", key='ai_research', type="primary"):
-                    with st.spinner("Claude 正在整合財報 + 新聞 + 分析師意見...(約 30-60 秒)"):
-                        result = analyze_earnings(tk, snap, use_ai=use_ai,
-                                                   api_key=claude_key)
-                        st.markdown(result)
+
+                col_run, col_view = st.columns([1, 1])
+                with col_run:
+                    if st.button("🚀 啟動深度分析", key='ai_research', type="primary"):
+                        with st.spinner("Claude 正在整合財報 + 新聞 + 分析師意見...(約 30-60 秒)"):
+                            result = analyze_earnings(tk, snap, use_ai=use_ai,
+                                                       api_key=claude_key)
+                            st.session_state[f'last_analysis_{tk}'] = result
+                with col_view:
+                    saved_for_tk = [a for a in sa.list_analyses('company')
+                                     if a['metadata'].get('ticker') == tk]
+                    if saved_for_tk:
+                        if st.button(f"📚 查看歷史分析 ({len(saved_for_tk)} 筆)",
+                                      key='view_hist'):
+                            st.session_state[f'show_hist_{tk}'] = True
+
+                # 顯示最新分析結果
+                if f'last_analysis_{tk}' in st.session_state:
+                    st.markdown("---")
+                    st.markdown(st.session_state[f'last_analysis_{tk}'])
+
+                    # 儲存按鈕
+                    save_col1, save_col2 = st.columns([1, 3])
+                    with save_col1:
+                        if st.button("💾 儲存此分析", key='save_analysis', type='secondary'):
+                            sa.save_analysis(
+                                category='company',
+                                title=f"{tk} - {snap.get('Name', '')[:30]}",
+                                content=st.session_state[f'last_analysis_{tk}'],
+                                metadata={
+                                    'ticker': tk,
+                                    'price': snap.get('Price'),
+                                    'pe': snap.get('P/E'),
+                                    'roe': snap.get('ROE(%)'),
+                                },
+                            )
+                            st.success("✓ 已儲存!可到「🤖 分析中心」的「📚 已儲存分析」分頁查看")
+
+                # 顯示歷史分析
+                if st.session_state.get(f'show_hist_{tk}'):
+                    st.markdown("---")
+                    st.subheader(f"📚 {tk} 的歷史分析")
+                    for item in saved_for_tk:
+                        meta = item.get('metadata', {})
+                        with st.expander(
+                            f"📅 {item['created_at'][:16]}{item['title']} "
+                            f"(當時股價 ${meta.get('price', 'N/A')})"
+                        ):
+                            full = sa.get_analysis(item['id'])
+                            if full:
+                                st.markdown(full['content'])
+                                if st.button("🗑️ 刪除這筆", key=f"del_{item['id']}"):
+                                    sa.delete_analysis(item['id'])
+                                    st.rerun()
 
 
 # ============================================================================
@@ -555,6 +732,7 @@ with tab6:
         "FOMC 聲明分析",
         "我的清單整體狀況",
         "自由提問 (需 AI)",
+        "📚 已儲存的分析",
     ])
 
     if analysis_type == "宏觀指標分析":
@@ -567,10 +745,34 @@ with tab6:
                 else:
                     result = analyze_macro_release(indicator, df, use_ai=use_ai,
                                                     api_key=claude_key)
-                    st.markdown(result)
-                    with st.expander("📈 原始資料"):
-                        st.line_chart(df.set_index('date')['value'])
-                        st.dataframe(df.tail(12), hide_index=True)
+                    st.session_state['last_macro_analysis'] = {
+                        'indicator': indicator,
+                        'content': result,
+                        'date': df.iloc[-1]['date'].strftime('%Y-%m-%d'),
+                        'value': float(df.iloc[-1]['value']),
+                    }
+
+        if 'last_macro_analysis' in st.session_state:
+            data = st.session_state['last_macro_analysis']
+            st.markdown(data['content'])
+
+            # 儲存按鈕
+            if st.button("💾 儲存此分析", key='save_macro'):
+                sa.save_analysis(
+                    category='macro',
+                    title=f"{data['indicator']} - {data['date']}",
+                    content=data['content'],
+                    metadata={'indicator': data['indicator'],
+                              'date': data['date'],
+                              'value': data['value']},
+                )
+                st.success("✓ 已儲存!可在「📚 已儲存的分析」查看")
+
+            df = get_indicator(data['indicator'], limit=24)
+            if not df.empty:
+                with st.expander("📈 原始資料"):
+                    st.line_chart(df.set_index('date')['value'])
+                    st.dataframe(df.tail(12), hide_index=True)
 
     elif analysis_type == "FOMC 聲明分析":
         st.caption("聲明來源:federalreserve.gov/monetarypolicy/fomccalendars.htm")
@@ -581,7 +783,22 @@ with tab6:
                 result = analyze_fomc_meeting(m_date.strftime('%Y-%m-%d'),
                                                 use_ai=use_ai, api_key=claude_key,
                                                 statement_text=stmt)
-                st.markdown(result)
+                st.session_state['last_fomc_analysis'] = {
+                    'date': m_date.strftime('%Y-%m-%d'),
+                    'content': result,
+                }
+
+        if 'last_fomc_analysis' in st.session_state:
+            data = st.session_state['last_fomc_analysis']
+            st.markdown(data['content'])
+            if st.button("💾 儲存此分析", key='save_fomc'):
+                sa.save_analysis(
+                    category='fomc',
+                    title=f"FOMC - {data['date']}",
+                    content=data['content'],
+                    metadata={'meeting_date': data['date']},
+                )
+                st.success("✓ 已儲存")
 
     elif analysis_type == "我的清單整體狀況":
         st.write("一鍵抓取清單所有公司的基本面快照,做整體比較。")
@@ -618,16 +835,29 @@ with tab6:
                 c2.metric("平均 ROE", f"{df['ROE(%)'].mean():.1f}%")
                 c3.metric("平均股息率", f"{df['DivYield(%)'].mean():.2f}%")
 
-            if use_ai and st.button("🤖 請 AI 分析整份清單"):
+        if 'my_scan' in st.session_state and use_ai:
+            if st.button("🤖 請 AI 分析整份清單"):
                 with st.spinner("Claude 分析中..."):
                     result = deep_analysis_with_claude(
                         prompt="請分析這份股票清單:1) 產業分布 2) 估值水準 3) 整體品質 4) 風險集中度 5) 建議觀察重點",
-                        context_data=df.to_string(),
+                        context_data=st.session_state['my_scan'].to_string(),
                         api_key=claude_key,
                     )
-                    st.markdown(result)
+                    st.session_state['last_portfolio_analysis'] = result
 
-    else:  # 自由提問
+        if 'last_portfolio_analysis' in st.session_state:
+            st.markdown("---")
+            st.markdown(st.session_state['last_portfolio_analysis'])
+            if st.button("💾 儲存此分析", key='save_portfolio'):
+                sa.save_analysis(
+                    category='portfolio',
+                    title=f"清單整體分析 - {datetime.now().strftime('%Y-%m-%d')}",
+                    content=st.session_state['last_portfolio_analysis'],
+                    metadata={'n_stocks': len(wl.get_tickers())},
+                )
+                st.success("✓ 已儲存")
+
+    elif analysis_type == "自由提問 (需 AI)":
         if not use_ai:
             st.warning("自由提問需要 Anthropic API key。")
         else:
@@ -653,7 +883,86 @@ with tab6:
                         context_data=context if context else "(未附帶資料)",
                         api_key=claude_key,
                     )
-                    st.markdown(answer)
+                    st.session_state['last_free_qa'] = {
+                        'question': question,
+                        'answer': answer,
+                    }
+
+            if 'last_free_qa' in st.session_state:
+                qa = st.session_state['last_free_qa']
+                st.markdown("---")
+                st.markdown(f"**❓ 問題:** {qa['question']}")
+                st.markdown(qa['answer'])
+                if st.button("💾 儲存此問答", key='save_qa'):
+                    sa.save_analysis(
+                        category='free_qa',
+                        title=f"提問 - {qa['question'][:40]}",
+                        content=f"### 問題\n\n{qa['question']}\n\n### 回答\n\n{qa['answer']}",
+                        metadata={'question': qa['question']},
+                    )
+                    st.success("✓ 已儲存")
+
+    else:  # 📚 已儲存的分析
+        st.subheader("📚 已儲存的分析")
+        stats = sa.get_stats()
+        if stats['total'] == 0:
+            st.info("還沒有儲存任何分析。在其他分頁點擊「💾 儲存此分析」按鈕來儲存。")
+        else:
+            st.caption(f"總共 {stats['total']} 筆 · "
+                       + " · ".join(f"{k}: {v}" for k, v in stats['by_category'].items()))
+
+            # 篩選
+            cat_filter = st.selectbox("篩選類別",
+                ['全部', 'company (公司)', 'macro (宏觀)', 'fomc (FOMC)',
+                 'portfolio (清單)', 'free_qa (自由提問)'])
+            cat_map = {
+                '全部': None,
+                'company (公司)': 'company',
+                'macro (宏觀)': 'macro',
+                'fomc (FOMC)': 'fomc',
+                'portfolio (清單)': 'portfolio',
+                'free_qa (自由提問)': 'free_qa',
+            }
+            filtered = sa.list_analyses(cat_map.get(cat_filter))
+
+            # 全部刪除按鈕
+            del_col1, del_col2 = st.columns([1, 4])
+            with del_col1:
+                if st.button("🗑️ 全部刪除", key='del_all_analyses'):
+                    st.session_state['confirm_del_all'] = True
+            if st.session_state.get('confirm_del_all'):
+                st.warning("⚠️ 確定要刪除所有已儲存的分析嗎?此動作無法復原。")
+                c1, c2 = st.columns([1, 1])
+                with c1:
+                    if st.button("✅ 確認刪除", key='confirm_del_yes'):
+                        n = sa.delete_all(cat_map.get(cat_filter))
+                        st.success(f"✓ 已刪除 {n} 筆")
+                        st.session_state['confirm_del_all'] = False
+                        st.rerun()
+                with c2:
+                    if st.button("取消", key='confirm_del_no'):
+                        st.session_state['confirm_del_all'] = False
+                        st.rerun()
+
+            st.divider()
+            for item in filtered:
+                meta = item.get('metadata', {})
+                meta_str = ""
+                if item['category'] == 'company':
+                    meta_str = f" · 當時股價 ${meta.get('price', 'N/A')}"
+                elif item['category'] == 'macro':
+                    meta_str = f" · 數值 {meta.get('value', 'N/A')}"
+
+                with st.expander(
+                    f"📅 {item['created_at'][:16]}{item['category']}{item['title']}{meta_str}"
+                ):
+                    full = sa.get_analysis(item['id'])
+                    if full:
+                        st.markdown(full['content'])
+                        if st.button("🗑️ 刪除這筆", key=f"del_main_{item['id']}"):
+                            sa.delete_analysis(item['id'])
+                            st.success("✓ 已刪除")
+                            st.rerun()
 
 
 # ============================================================================
