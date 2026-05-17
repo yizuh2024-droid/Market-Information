@@ -155,67 +155,97 @@ with tab1:
             if df.empty:
                 st.info("這個清單是空的。在右邊新增股票吧。")
             else:
-                # === 多選刪除介面 ===
-                st.caption(f"清單共 {len(df)} 檔 · 勾選想刪除的股票後點「刪除選取項目」")
+                # === 編輯模式切換 ===
+                edit_mode_key = f'edit_mode_{current_group}'
+                if edit_mode_key not in st.session_state:
+                    st.session_state[edit_mode_key] = False
+                edit_mode = st.session_state[edit_mode_key]
 
-                # 建立顯示用 DataFrame:有 logo、可勾選
-                display_df = df[['Ticker', 'FullName', 'Note', 'AddedDate', 'LogoURL']].copy()
-                display_df.insert(0, 'Delete', False)
-                display_df = display_df.rename(columns={
-                    'LogoURL': 'Logo',
-                    'FullName': 'Company',
-                    'Delete': '刪除',
-                    'AddedDate': '加入日期',
-                    'Note': '備註',
-                })
-
-                edited = st.data_editor(
-                    display_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    disabled=['Ticker', 'Company', '加入日期', 'Logo'],
-                    column_config={
-                        '刪除': st.column_config.CheckboxColumn(
-                            '刪除',
-                            help='勾選後點下方「刪除選取項目」按鈕',
-                            default=False,
-                            width='small',
-                        ),
-                        'Logo': st.column_config.ImageColumn(
-                            'Logo',
-                            help='公司圖標',
-                            width='small',
-                        ),
-                        'Ticker': st.column_config.TextColumn('代號', width='small'),
-                        'Company': st.column_config.TextColumn('公司', width='medium'),
-                        '備註': st.column_config.TextColumn('備註', width='medium'),
-                        '加入日期': st.column_config.TextColumn('加入日期', width='small'),
-                    },
-                    key=f'editor_{current_group}',
-                )
-
-                # 偵測備註修改
-                for i, row in edited.iterrows():
-                    original_note = df.iloc[i]['Note']
-                    if row['備註'] != original_note:
-                        wl.update_note(row['Ticker'], row['備註'], current_group)
-
-                # 批次刪除
-                to_remove = edited[edited['刪除'] == True]['Ticker'].tolist()
-                btn_col1, btn_col2 = st.columns([1, 3])
-                with btn_col1:
-                    if to_remove:
-                        if st.button(f"❌ 刪除選取的 {len(to_remove)} 檔",
-                                      key='multi_remove_btn', type='primary'):
-                            n_removed, removed_list = wl.remove_multiple(to_remove, current_group)
-                            st.success(f"✓ 已移除 {n_removed} 檔:{', '.join(removed_list)}")
+                # 上方資訊列 + 編輯按鈕
+                info_col, btn_col = st.columns([3, 1])
+                with info_col:
+                    if edit_mode:
+                        st.caption(f"📝 編輯模式 · 清單共 {len(df)} 檔 · 勾選想刪除的後點「刪除選取項目」")
+                    else:
+                        st.caption(f"清單共 {len(df)} 檔")
+                with btn_col:
+                    if edit_mode:
+                        if st.button("✅ 完成編輯", key='exit_edit', use_container_width=True):
+                            st.session_state[edit_mode_key] = False
                             st.rerun()
                     else:
-                        st.button("❌ 刪除選取項目", disabled=True,
-                                  help='請先在表格中勾選要刪除的股票')
-                with btn_col2:
-                    if to_remove:
-                        st.caption(f"將刪除:{', '.join(to_remove)}")
+                        if st.button("✏️ 編輯", key='enter_edit', use_container_width=True):
+                            st.session_state[edit_mode_key] = True
+                            st.rerun()
+
+                # === 顯示清單(依模式不同) ===
+                if edit_mode:
+                    # 編輯模式:可勾選刪除、可改備註
+                    display_df = df[['Ticker', 'FullName', 'Note', 'AddedDate']].copy()
+                    display_df.insert(0, '刪除', False)
+                    display_df = display_df.rename(columns={
+                        'FullName': '公司',
+                        'AddedDate': '加入日期',
+                        'Note': '備註',
+                    })
+
+                    edited = st.data_editor(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=['Ticker', '公司', '加入日期'],
+                        column_config={
+                            '刪除': st.column_config.CheckboxColumn(
+                                '刪除',
+                                help='勾選後點下方「刪除選取項目」按鈕',
+                                default=False,
+                                width='small',
+                            ),
+                            'Ticker': st.column_config.TextColumn('代號', width='small'),
+                            '公司': st.column_config.TextColumn('公司', width='medium'),
+                            '備註': st.column_config.TextColumn('備註', width='medium'),
+                            '加入日期': st.column_config.TextColumn('加入日期', width='small'),
+                        },
+                        key=f'editor_{current_group}',
+                    )
+
+                    # 偵測備註修改
+                    for i, row in edited.iterrows():
+                        original_note = df.iloc[i]['Note']
+                        if row['備註'] != original_note:
+                            wl.update_note(row['Ticker'], row['備註'], current_group)
+
+                    # 批次刪除按鈕
+                    to_remove = edited[edited['刪除'] == True]['Ticker'].tolist()
+                    btn_col1, btn_col2 = st.columns([1, 3])
+                    with btn_col1:
+                        if to_remove:
+                            if st.button(f"❌ 刪除選取的 {len(to_remove)} 檔",
+                                          key='multi_remove_btn', type='primary'):
+                                n_removed, removed_list = wl.remove_multiple(to_remove, current_group)
+                                st.success(f"✓ 已移除 {n_removed} 檔:{', '.join(removed_list)}")
+                                st.rerun()
+                        else:
+                            st.button("❌ 刪除選取項目", disabled=True,
+                                      help='請先在表格中勾選要刪除的股票')
+                    with btn_col2:
+                        if to_remove:
+                            st.caption(f"將刪除:{', '.join(to_remove)}")
+
+                else:
+                    # 一般檢視模式:純顯示、無法編輯
+                    display_df = df[['Ticker', 'FullName', 'Note', 'AddedDate']].copy()
+                    display_df = display_df.rename(columns={
+                        'Ticker': '代號',
+                        'FullName': '公司',
+                        'AddedDate': '加入日期',
+                        'Note': '備註',
+                    })
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
         # --- 右欄:新增與群組管理 ---
         with col_right:
@@ -253,14 +283,9 @@ with tab1:
 
                     st.caption("點按鈕加入清單:")
                     for r in results:
-                        c1, c2, c3 = st.columns([1, 4, 1])
+                        c1, c2 = st.columns([5, 1])
                         with c1:
-                            if r.get('logo_url'):
-                                st.image(r['logo_url'], width=36)
-                            else:
-                                st.markdown("📈")
-                        with c2:
-                            st.markdown(f"**{r['symbol']}** · {r['name'][:40]}")
+                            st.markdown(f"**{r['symbol']}** · {r['name'][:50]}")
                             extras = []
                             if r.get('exchange'):
                                 extras.append(r['exchange'])
@@ -268,7 +293,7 @@ with tab1:
                                 extras.append(r['type'])
                             if extras:
                                 st.caption(' · '.join(extras))
-                        with c3:
+                        with c2:
                             btn_key = f"add_{r['symbol']}_{r['exchange']}"
                             if st.button("加入", key=btn_key, use_container_width=True):
                                 ok, msg = wl.add_ticker(
@@ -276,7 +301,6 @@ with tab1:
                                     target_group_search,
                                     new_note_search,
                                     full_name=r['name'],
-                                    logo_url=r.get('logo_url', ''),
                                 )
                                 if ok:
                                     st.success(msg)
@@ -308,7 +332,6 @@ with tab1:
                                     ok, _ = wl.add_ticker(
                                         v['symbol'], bulk_group, '',
                                         full_name=v.get('name', ''),
-                                        logo_url=v.get('logo_url', ''),
                                     )
                                     if ok:
                                         valid_added.append(v['symbol'])
@@ -609,22 +632,31 @@ with tab3:
                     st.markdown("---")
                     st.markdown(st.session_state[f'last_analysis_{tk}'])
 
-                    # 儲存按鈕
+                    # 儲存按鈕(避免重複儲存同一份)
+                    saved_key = f'saved_{tk}_{hash(st.session_state[f"last_analysis_{tk}"]) % 100000}'
                     save_col1, save_col2 = st.columns([1, 3])
                     with save_col1:
-                        if st.button("💾 儲存此分析", key='save_analysis', type='secondary'):
-                            sa.save_analysis(
-                                category='company',
-                                title=f"{tk} - {snap.get('Name', '')[:30]}",
-                                content=st.session_state[f'last_analysis_{tk}'],
-                                metadata={
-                                    'ticker': tk,
-                                    'price': snap.get('Price'),
-                                    'pe': snap.get('P/E'),
-                                    'roe': snap.get('ROE(%)'),
-                                },
-                            )
-                            st.success("✓ 已儲存!可到「🤖 分析中心」的「📚 已儲存分析」分頁查看")
+                        if st.session_state.get(saved_key):
+                            st.success("✓ 已儲存")
+                        else:
+                            if st.button("💾 儲存此分析", key='save_analysis', type='primary'):
+                                sa.save_analysis(
+                                    category='company',
+                                    title=f"{tk} - {snap.get('Name', '')[:30]}",
+                                    content=st.session_state[f'last_analysis_{tk}'],
+                                    metadata={
+                                        'ticker': tk,
+                                        'price': snap.get('Price'),
+                                        'pe': snap.get('P/E'),
+                                        'roe': snap.get('ROE(%)'),
+                                    },
+                                )
+                                st.session_state[saved_key] = True
+                                st.success("✓ 已儲存!到「🤖 分析中心」→「📚 已儲存的分析」可隨時查看")
+                                st.rerun()
+                    with save_col2:
+                        if not st.session_state.get(saved_key):
+                            st.caption("💡 點儲存後,以後不用重跑就能查看(節省 AI token)")
 
                 # 顯示歷史分析
                 if st.session_state.get(f'show_hist_{tk}'):
