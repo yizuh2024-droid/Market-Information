@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# 個人資料(不要上傳)
+watchlist.json
+saved_analyses.json
+sentiment_history.json
+.env
+*.log
+
+# Mac 系統
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# GitHub Actions (本機保留,但不 push)
+.github/
