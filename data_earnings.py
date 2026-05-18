@@ -17,6 +17,32 @@ warnings.filterwarnings('ignore')
 
 
 # ============================================================================
+# 使用 curl_cffi session 模仿瀏覽器,降低被 Yahoo 阻擋的機率
+# ============================================================================
+def _get_session():
+    """嘗試用 curl_cffi 建立 session;失敗就回 None 用預設。"""
+    try:
+        from curl_cffi import requests as cffi_requests
+        return cffi_requests.Session(impersonate="chrome")
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+_SESSION = _get_session()
+
+
+def _ticker(symbol: str) -> yf.Ticker:
+    """建立 Ticker,優先使用模仿瀏覽器的 session。"""
+    if _SESSION is not None:
+        try:
+            return yf.Ticker(symbol, session=_SESSION)
+        except Exception:
+            pass
+    return yf.Ticker(symbol)
+
+
+# ============================================================================
 # 1. 取得 S&P 500 成分股清單
 # ============================================================================
 
@@ -41,7 +67,7 @@ def get_sp500_tickers() -> List[str]:
 def get_earnings_dates(ticker: str, limit: int = 8) -> pd.DataFrame:
     """取得單一公司未來與最近的財報日期。"""
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         cal = t.earnings_dates  # 過去 + 未來幾季
         if cal is None or cal.empty:
             return pd.DataFrame()
@@ -72,7 +98,7 @@ def get_earnings_calendar(tickers: List[str],
     all_earnings = []
     for ticker in tickers:
         try:
-            t = yf.Ticker(ticker)
+            t = _ticker(ticker)
             cal = t.earnings_dates
             if cal is None or cal.empty:
                 continue
@@ -123,7 +149,7 @@ def get_dividend_calendar(tickers: List[str], lookback_days: int = 365) -> pd.Da
 
     for ticker in tickers:
         try:
-            t = yf.Ticker(ticker)
+            t = _ticker(ticker)
             divs = t.dividends
             if divs is None or divs.empty:
                 continue
@@ -170,7 +196,7 @@ def get_dividend_calendar(tickers: List[str], lookback_days: int = 365) -> pd.Da
 def get_company_snapshot(ticker: str) -> dict:
     """取得單一公司的基本面快照。"""
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         info = t.info
         return {
             'Ticker': ticker,
@@ -207,7 +233,7 @@ def get_financial_statements(ticker: str, freq: str = 'quarterly') -> dict:
         dict 包含 income_stmt, balance_sheet, cashflow 三個 DataFrame
     """
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         if freq == 'quarterly':
             income = t.quarterly_income_stmt
             balance = t.quarterly_balance_sheet
@@ -230,7 +256,10 @@ def get_financial_statements(ticker: str, freq: str = 'quarterly') -> dict:
 def get_key_financials(ticker: str, n_periods: int = 4) -> pd.DataFrame:
     """整理最近 N 期的關鍵財務指標(營收、毛利率、淨利、EPS、自由現金流)。
 
-    重點:呈現「趨勢」而非單期數據。
+    強健版:
+      - 支援多種欄位名變體(有空格 vs 無空格、不同版本 yfinance)
+      - 缺欄位也不會整列空白
+      - 對銀行 / 保險等特殊產業會 fallback
     """
     fin = get_financial_statements(ticker, 'quarterly')
     if 'error' in fin:
@@ -246,37 +275,71 @@ def get_key_financials(ticker: str, n_periods: int = 4) -> pd.DataFrame:
     income = income.iloc[:, :n_periods]
     cashflow = cashflow.iloc[:, :n_periods] if cashflow is not None and not cashflow.empty else None
 
+    # 支援多種欄位名變體
+    # yfinance 不同版本 / 不同產業的命名不一,需多 fallback
+    FIELD_ALIASES = {
+        'Revenue': ['Total Revenue', 'TotalRevenue', 'Revenue', 'Net Revenue',
+                     'Net Interest Income', 'Total Premiums Earned'],
+        'GrossProfit': ['Gross Profit', 'GrossProfit'],
+        'OperatingIncome': ['Operating Income', 'OperatingIncome',
+                              'Total Operating Income As Reported',
+                              'Operating Revenue'],
+        'NetIncome': ['Net Income', 'NetIncome',
+                       'Net Income Common Stockholders',
+                       'Net Income From Continuing Operations',
+                       'Net Income From Continuing And Discontinued Operation'],
+        'EPS': ['Diluted EPS', 'DilutedEPS', 'Basic EPS', 'BasicEPS'],
+    }
+
+    FCF_ALIASES = ['Free Cash Flow', 'FreeCashFlow',
+                    'Operating Cash Flow', 'OperatingCashFlow',
+                    'Cash Flow From Continuing Operating Activities']
+
+    def find_value(df, aliases, date):
+        """在 df 的 index 中找出任一個 alias,回傳對應 date 的值。"""
+        for alias in aliases:
+            if alias in df.index:
+                try:
+                    val = df.loc[alias, date]
+                    if pd.notna(val):
+                        return float(val)
+                except Exception:
+                    continue
+        return None
+
     rows = []
     for date in income.columns:
         row = {'Period': date.strftime('%Y-%m')}
 
         # 從損益表抓
-        for key, label in [
-            ('Total Revenue', 'Revenue'),
-            ('Gross Profit', 'GrossProfit'),
-            ('Operating Income', 'OperatingIncome'),
-            ('Net Income', 'NetIncome'),
-            ('Diluted EPS', 'EPS'),
-        ]:
-            if key in income.index:
-                val = income.loc[key, date]
-                row[label] = round(val / 1e6, 2) if label != 'EPS' and pd.notna(val) else (round(val, 2) if pd.notna(val) else None)
+        for label, aliases in FIELD_ALIASES.items():
+            val = find_value(income, aliases, date)
+            if val is not None:
+                if label == 'EPS':
+                    row[label] = round(val, 2)
+                else:
+                    row[label] = round(val / 1e6, 2)  # 轉百萬
 
-        # 從現金流抓
+        # 從現金流抓 FCF
         if cashflow is not None and date in cashflow.columns:
-            if 'Free Cash Flow' in cashflow.index:
-                fcf = cashflow.loc['Free Cash Flow', date]
-                row['FreeCashFlow'] = round(fcf / 1e6, 2) if pd.notna(fcf) else None
+            fcf = find_value(cashflow, FCF_ALIASES, date)
+            if fcf is not None:
+                row['FreeCashFlow'] = round(fcf / 1e6, 2)
 
-        # 計算毛利率、淨利率
-        if 'Revenue' in row and 'GrossProfit' in row and row.get('Revenue'):
+        # 計算毛利率、淨利率(只在有資料時計算)
+        if row.get('Revenue') and row.get('GrossProfit'):
             row['GrossMargin(%)'] = round(row['GrossProfit'] / row['Revenue'] * 100, 1)
-        if 'Revenue' in row and 'NetIncome' in row and row.get('Revenue'):
+        if row.get('Revenue') and row.get('NetIncome'):
             row['NetMargin(%)'] = round(row['NetIncome'] / row['Revenue'] * 100, 1)
+        if row.get('Revenue') and row.get('OperatingIncome'):
+            row['OperMargin(%)'] = round(row['OperatingIncome'] / row['Revenue'] * 100, 1)
 
         rows.append(row)
 
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
     # 反過來:由舊到新
     df = df.iloc[::-1].reset_index(drop=True)
 
@@ -290,6 +353,8 @@ def get_key_financials(ticker: str, n_periods: int = 4) -> pd.DataFrame:
 
     return df
 
+    return df
+
 
 def get_company_news(ticker: str, limit: int = 8) -> list:
     """抓取近期公司新聞。
@@ -298,7 +363,7 @@ def get_company_news(ticker: str, limit: int = 8) -> list:
         list of {title, publisher, link, date, summary}
     """
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         news_raw = t.news
         if not news_raw:
             return []
@@ -345,7 +410,7 @@ def get_company_news(ticker: str, limit: int = 8) -> list:
 def get_analyst_view(ticker: str) -> dict:
     """抓取分析師目標價、建議、評等變化。"""
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         info = t.info
 
         result = {
@@ -381,7 +446,7 @@ def get_analyst_view(ticker: str) -> dict:
 def get_price_performance(ticker: str) -> dict:
     """計算多時間區間的股價表現,用於對比。"""
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         hist = t.history(period='2y')
         if hist.empty:
             return {}

@@ -9,9 +9,6 @@
 """
 
 import streamlit as st
-st.title("MARKET CLEAN VERSION")
-
-st.write("這是新專案")
 import pandas as pd
 from datetime import datetime, timedelta
 import os
@@ -833,36 +830,96 @@ with tab4:
 
                 # === 3. 財報趨勢 ===
                 fin_df = st.session_state.get('financials')
-                if fin_df is not None and not fin_df.empty:
+
+                # 如果季度資料為空,嘗試年度資料 fallback
+                if fin_df is None or fin_df.empty:
+                    st.subheader("💰 財報趨勢")
+                    with st.expander("⚠️ 季度財報資料無法取得 — 點此嘗試年度資料", expanded=True):
+                        st.caption("可能原因:")
+                        st.caption("1. yfinance 在 Streamlit Cloud 上偶爾被限流 — 試試「清除快取」")
+                        st.caption("2. 該公司沒有公開的季度財報(如某些 ADR、ETF)")
+                        st.caption("3. 該公司財報結構特殊(如銀行、保險、REIT)")
+
+                        if st.button("📅 嘗試載入年度財報", key='try_annual'):
+                            with st.spinner("抓取年度財報..."):
+                                from data_earnings import get_financial_statements
+                                annual = get_financial_statements(tk, freq='annual')
+                                if 'error' in annual:
+                                    st.error(f"年度資料也失敗:{annual['error']}")
+                                elif annual.get('income_stmt') is None or annual['income_stmt'].empty:
+                                    st.error("年度損益表為空。可能 yfinance 對這檔股票沒有資料。")
+                                else:
+                                    # 用年度資料簡單呈現
+                                    inc = annual['income_stmt']
+                                    st.success("✓ 找到年度資料!")
+                                    st.write("**年度損益表(前 4 年)**")
+                                    # 過濾出主要欄位
+                                    key_rows = []
+                                    for keyword in ['Total Revenue', 'Gross Profit', 'Operating Income',
+                                                     'Net Income', 'Diluted EPS', 'Basic EPS']:
+                                        matches = [idx for idx in inc.index if keyword.lower() in str(idx).lower()]
+                                        if matches:
+                                            key_rows.extend(matches[:1])
+                                    if key_rows:
+                                        display = inc.loc[key_rows].iloc[:, :4]
+                                        # 數值縮為百萬
+                                        for col in display.columns:
+                                            display[col] = pd.to_numeric(display[col], errors='coerce')
+                                        display_m = display / 1e6
+                                        display_m.columns = [c.strftime('%Y') for c in display_m.columns]
+                                        # EPS 不要除以百萬
+                                        for idx in display_m.index:
+                                            if 'EPS' in str(idx).upper():
+                                                display_m.loc[idx] = display.loc[idx]
+                                        st.dataframe(display_m.round(2), use_container_width=True)
+                                    else:
+                                        # 顯示原始所有欄位
+                                        st.dataframe(inc.iloc[:, :4], use_container_width=True)
+
+                                    with st.expander("🔍 完整年度資產負債表 / 現金流量表"):
+                                        if annual.get('balance_sheet') is not None and not annual['balance_sheet'].empty:
+                                            st.write("**資產負債表**")
+                                            st.dataframe(annual['balance_sheet'].iloc[:20, :4])
+                                        if annual.get('cashflow') is not None and not annual['cashflow'].empty:
+                                            st.write("**現金流量表**")
+                                            st.dataframe(annual['cashflow'].iloc[:15, :4])
+
+                elif fin_df is not None and not fin_df.empty:
                     st.subheader("💰 近 8 季財報趨勢")
 
                     # 三欄關鍵指標卡
                     latest = fin_df.iloc[-1]
                     f1, f2, f3 = st.columns(3)
-                    if 'Revenue' in fin_df.columns:
+                    if 'Revenue' in fin_df.columns and pd.notna(latest.get('Revenue')):
                         yoy = latest.get('Revenue_YoY(%)')
                         f1.metric(f"營收 (Q{latest['Period']})",
-                                   f"${latest['Revenue']/1000:.1f}B" if pd.notna(latest.get('Revenue')) else "N/A",
+                                   f"${latest['Revenue']/1000:.1f}B",
                                    delta=f"YoY {yoy:+.1f}%" if pd.notna(yoy) else None)
-                    if 'NetIncome' in fin_df.columns:
+                    else:
+                        f1.metric("營收", "N/A")
+                    if 'NetIncome' in fin_df.columns and pd.notna(latest.get('NetIncome')):
                         yoy = latest.get('NetIncome_YoY(%)')
                         f2.metric("淨利",
-                                   f"${latest['NetIncome']/1000:.2f}B" if pd.notna(latest.get('NetIncome')) else "N/A",
+                                   f"${latest['NetIncome']/1000:.2f}B",
                                    delta=f"YoY {yoy:+.1f}%" if pd.notna(yoy) else None)
-                    if 'EPS' in fin_df.columns:
-                        f3.metric("EPS",
-                                   f"${latest['EPS']:.2f}" if pd.notna(latest.get('EPS')) else "N/A")
+                    else:
+                        f2.metric("淨利", "N/A")
+                    if 'EPS' in fin_df.columns and pd.notna(latest.get('EPS')):
+                        f3.metric("EPS", f"${latest['EPS']:.2f}")
+                    else:
+                        f3.metric("EPS", "N/A")
 
                     # 趨勢圖
                     chart_cols = ['Revenue', 'NetIncome', 'FreeCashFlow']
-                    available = [c for c in chart_cols if c in fin_df.columns]
+                    available = [c for c in chart_cols if c in fin_df.columns
+                                  and fin_df[c].notna().any()]
                     if available and len(fin_df) >= 2:
                         chart_df = fin_df.set_index('Period')[available]
                         st.line_chart(chart_df, height=250)
 
                     # 利潤率走勢
-                    margin_cols = [c for c in ['GrossMargin(%)', 'NetMargin(%)']
-                                   if c in fin_df.columns]
+                    margin_cols = [c for c in ['GrossMargin(%)', 'OperMargin(%)', 'NetMargin(%)']
+                                   if c in fin_df.columns and fin_df[c].notna().any()]
                     if margin_cols and len(fin_df) >= 2:
                         st.caption("利潤率走勢 (%)")
                         st.line_chart(fin_df.set_index('Period')[margin_cols], height=200)
