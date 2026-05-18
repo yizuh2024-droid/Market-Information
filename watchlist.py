@@ -73,7 +73,7 @@ def get_tickers(group: str = None) -> List[str]:
 
 
 def get_watchlist_df(group: str = None) -> pd.DataFrame:
-    """以 DataFrame 形式回傳完整清單(含備註、加入日期、公司名、logo)。"""
+    """以 DataFrame 形式回傳完整清單。"""
     data = _load_raw()
     rows = []
     groups_to_iter = [group] if group else data['groups'].keys()
@@ -86,20 +86,47 @@ def get_watchlist_df(group: str = None) -> pd.DataFrame:
                 'Note': item.get('note', ''),
                 'FullName': item.get('full_name', ''),
                 'LogoURL': item.get('logo_url', ''),
+                'Shares': item.get('shares', 0) or 0,
+                'CostBasis': item.get('cost_basis', 0) or 0,
+                'PurchaseDate': item.get('purchase_date', ''),
             })
     return pd.DataFrame(rows)
 
 
+def update_holdings(ticker: str, shares: float, cost_basis: float,
+                     purchase_date: str = '', group: str = None) -> bool:
+    """更新持倉資訊(股數、成本、買入日)。"""
+    data = _load_raw()
+    updated = False
+    groups_to_check = [group] if group else list(data['groups'].keys())
+    for g in groups_to_check:
+        for item in data['groups'].get(g, []):
+            if item['ticker'] == ticker.upper():
+                item['shares'] = float(shares) if shares else 0
+                item['cost_basis'] = float(cost_basis) if cost_basis else 0
+                if purchase_date:
+                    item['purchase_date'] = purchase_date
+                updated = True
+    if updated:
+        _save_raw(data)
+    return updated
+
+
 def add_ticker(ticker: str, group: str = 'Default', note: str = '',
-               full_name: str = '', logo_url: str = '') -> tuple[bool, str]:
+               full_name: str = '', logo_url: str = '',
+               shares: float = 0, cost_basis: float = 0,
+               purchase_date: str = '') -> tuple[bool, str]:
     """新增一檔股票到指定群組。
 
     Args:
         ticker: 股票代號
         group: 群組名稱
         note: 備註
-        full_name: 公司全名(顯示用)
-        logo_url: 公司 logo URL(顯示用)
+        full_name: 公司全名
+        logo_url: Logo URL(目前不顯示但保留欄位)
+        shares: 持有股數(0 = 純觀察名單)
+        cost_basis: 平均成本(每股)
+        purchase_date: 買入日期 'YYYY-MM-DD'
 
     Returns: (success, message)
     """
@@ -121,6 +148,9 @@ def add_ticker(ticker: str, group: str = 'Default', note: str = '',
         'note': note,
         'full_name': full_name,
         'logo_url': logo_url,
+        'shares': float(shares) if shares else 0,
+        'cost_basis': float(cost_basis) if cost_basis else 0,
+        'purchase_date': purchase_date,
     })
     _save_raw(data)
     return True, f"✓ {ticker} 已加入「{group}」"

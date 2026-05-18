@@ -8,6 +8,8 @@ env/
 
 # 個人資料(不要上傳)
 watchlist.json
+saved_analyses.json
+sentiment_history.json
 .env
 *.log
 
@@ -20,4 +22,6 @@ watchlist.json
 
 # Streamlit
 .streamlit/secrets.toml
+
+# GitHub Actions (本機保留,但不 push)
 .github/

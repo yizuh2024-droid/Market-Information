@@ -167,6 +167,51 @@ def cached_search(query: str, limit: int = 8) -> tuple[list, str]:
 
 
 # ============================================================================
+# 同業比較
+# ============================================================================
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def cached_get_peers(ticker: str, max_peers: int = 10) -> dict:
+    """取得同業清單,快取 6 小時。"""
+    from data_peers import get_peers
+    return get_peers(ticker, max_peers)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_compare_peers(target: str, peers_tuple: tuple) -> pd.DataFrame:
+    """同業財務比較,快取 1 小時。"""
+    from data_peers import compare_peers
+    return compare_peers(target, list(peers_tuple))
+
+
+# ============================================================================
+# 投資組合
+# ============================================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_portfolio_pnl(_watchlist_df_hash: str, watchlist_df: pd.DataFrame) -> pd.DataFrame:
+    """投資組合損益,快取 5 分鐘(股價變動快)。
+    _watchlist_df_hash 用於觸發重算(當清單變動時)。"""
+    from portfolio import calculate_portfolio_pnl
+    return calculate_portfolio_pnl(watchlist_df)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_benchmark_comparison(_pnl_df_hash: str, pnl_df: pd.DataFrame,
+                                 benchmark: str = '^GSPC') -> dict:
+    """Benchmark 比較,快取 10 分鐘。"""
+    from portfolio import benchmark_comparison
+    return benchmark_comparison(pnl_df, benchmark)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_sector_concentration(_pnl_df_hash: str, pnl_df: pd.DataFrame) -> pd.DataFrame:
+    """產業集中度,快取 1 小時。"""
+    from portfolio import sector_concentration
+    return sector_concentration(pnl_df)
+
+
+# ============================================================================
 # 清快取的工具函數
 # ============================================================================
 

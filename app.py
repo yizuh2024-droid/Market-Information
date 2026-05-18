@@ -92,8 +92,9 @@ with st.sidebar:
 # 主分頁
 # ============================================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📋 我的清單",
+    "💼 投資組合",
     "🏢 財報 & 股息",
     "🔍 公司研究",
     "📅 經濟日曆",
@@ -292,6 +293,20 @@ with tab1:
                         placeholder="例:核心持股"
                     )
 
+                    # 持倉資訊(選填)
+                    with st.expander("💼 加入時填持倉資訊(選填,留空 = 純觀察名單)"):
+                        h_col1, h_col2, h_col3 = st.columns(3)
+                        with h_col1:
+                            new_shares = st.number_input("股數", min_value=0.0, value=0.0,
+                                                          step=1.0, key='search_shares')
+                        with h_col2:
+                            new_cost = st.number_input("每股成本 ($)", min_value=0.0,
+                                                        value=0.0, step=0.01,
+                                                        key='search_cost')
+                        with h_col3:
+                            new_pdate = st.date_input("買入日", value=None,
+                                                       key='search_pdate')
+
                     st.caption("點按鈕加入清單:")
                     for r in results:
                         c1, c2 = st.columns([5, 1])
@@ -307,11 +322,15 @@ with tab1:
                         with c2:
                             btn_key = f"add_{r['symbol']}_{r['exchange']}"
                             if st.button("加入", key=btn_key, use_container_width=True):
+                                pdate_str = new_pdate.strftime('%Y-%m-%d') if new_pdate else ''
                                 ok, msg = wl.add_ticker(
                                     r['symbol'],
                                     target_group_search,
                                     new_note_search,
                                     full_name=r['name'],
+                                    shares=new_shares,
+                                    cost_basis=new_cost,
+                                    purchase_date=pdate_str,
                                 )
                                 if ok:
                                     st.success(msg)
@@ -398,10 +417,282 @@ with tab1:
 
 
 # ============================================================================
-# Tab 2:財報 & 股息 (僅針對清單)
+# Tab 2:投資組合
 # ============================================================================
 
 with tab2:
+    st.header("💼 投資組合追蹤")
+    st.caption("計算實際持倉的損益、與 S&P 500 比較、產業集中度分析")
+
+    full_df = wl.get_watchlist_df()
+    holdings = full_df[full_df['Shares'] > 0] if not full_df.empty else pd.DataFrame()
+
+    if holdings.empty:
+        st.info("💡 還沒有任何持倉資料。")
+        st.markdown("""
+        ### 怎麼加入持倉?
+        有兩種方式:
+
+        **方式 1:加新股票時順便填**
+        到「📋 我的清單」→ 智能搜尋 → 找到股票後,**展開「💼 加入時填持倉資訊」**
+        填入「股數、每股成本、買入日」,再按加入。
+
+        **方式 2:更新現有清單股票的持倉**
+        往下捲動到「📝 更新現有股票持倉」區段。
+        """)
+
+    else:
+        # === 1. 整體摘要 ===
+        with st.spinner("計算當前損益..."):
+            import hashlib
+            df_hash = hashlib.md5(holdings.to_string().encode()).hexdigest()
+            pnl_df = cache.cached_portfolio_pnl(df_hash, holdings)
+
+        if pnl_df.empty:
+            st.warning("⚠ 無法計算損益,可能股價資料抓不到")
+        else:
+            from portfolio import portfolio_summary
+            summary = portfolio_summary(pnl_df)
+
+            st.subheader("📊 整體摘要")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("總投入", f"${summary['total_cost']:,.2f}")
+            m2.metric("目前市值", f"${summary['total_market_value']:,.2f}")
+            pnl_color = 'normal' if summary['total_pnl'] >= 0 else 'inverse'
+            m3.metric("總損益", f"${summary['total_pnl']:,.2f}",
+                      delta=f"{summary['total_pnl_pct']:+.2f}%",
+                      delta_color=pnl_color)
+            m4.metric("持倉檔數", f"{summary['n_positions']}")
+
+            # 贏家輸家
+            wl_col1, wl_col2 = st.columns(2)
+            with wl_col1:
+                if summary.get('biggest_winner'):
+                    w = summary['biggest_winner']
+                    st.success(f"🏆 **最大贏家**:{w['ticker']} "
+                               f"`{w['pnl_pct']:+.2f}%` (${w['pnl']:+,.2f})")
+                st.caption(f"獲利檔數:{summary['n_winners']}")
+            with wl_col2:
+                if summary.get('biggest_loser') and summary['biggest_loser']['pnl_pct'] < 0:
+                    l = summary['biggest_loser']
+                    st.error(f"📉 **最大輸家**:{l['ticker']} "
+                             f"`{l['pnl_pct']:+.2f}%` (${l['pnl']:+,.2f})")
+                st.caption(f"虧損檔數:{summary['n_losers']}")
+
+            st.divider()
+
+            # === 2. 個別持倉表 ===
+            st.subheader("📋 個別持倉")
+
+            display_pnl = summary['with_weights'].copy()
+            # 排序:依損益百分比
+            display_pnl = display_pnl.sort_values('PnL_Pct', ascending=False)
+
+            # 加入持倉佔比的進度條
+            display_cols = ['Ticker', 'Shares', 'CostBasis', 'CurrentPrice',
+                             'MarketValue', 'PnL', 'PnL_Pct', 'Weight(%)']
+            show = display_pnl[display_cols].rename(columns={
+                'Ticker': '代號', 'Shares': '股數',
+                'CostBasis': '成本', 'CurrentPrice': '現價',
+                'MarketValue': '市值', 'PnL': '損益',
+                'PnL_Pct': '報酬率(%)', 'Weight(%)': '佔比(%)',
+            })
+
+            st.dataframe(
+                show.style.format({
+                    '股數': '{:.2f}',
+                    '成本': '${:.2f}',
+                    '現價': '${:.2f}',
+                    '市值': '${:,.2f}',
+                    '損益': '${:+,.2f}',
+                    '報酬率(%)': '{:+.2f}',
+                    '佔比(%)': '{:.2f}',
+                }).background_gradient(subset=['報酬率(%)'],
+                                         cmap='RdYlGn', vmin=-30, vmax=30),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.divider()
+
+            # === 3. vs Benchmark 比較 ===
+            st.subheader("🆚 vs S&P 500 比較")
+            st.caption("從你的每檔買入日起算,你的股票 vs S&P 500 在同期的表現")
+
+            benchmark_choice = st.selectbox("基準指數",
+                ['^GSPC (S&P 500)', '^NDX (NASDAQ-100)', '^DJI (Dow Jones)'],
+                key='benchmark_choice'
+            )
+            benchmark_symbol = benchmark_choice.split(' ')[0]
+
+            if st.button("📊 計算 Alpha", key='calc_alpha'):
+                with st.spinner("抓取 benchmark 歷史..."):
+                    bench_data = cache.cached_benchmark_comparison(df_hash, pnl_df, benchmark_symbol)
+                    st.session_state['bench_data'] = bench_data
+
+            bench_data = st.session_state.get('bench_data')
+            if bench_data and 'positions' in bench_data:
+                b1, b2, b3 = st.columns(3)
+                b1.metric("📈 你的組合報酬",
+                           f"{bench_data['weighted_portfolio_return']:+.2f}%")
+                b2.metric(f"📊 {benchmark_choice} 同期",
+                           f"{bench_data['weighted_benchmark_return']:+.2f}%")
+                alpha_color = 'normal' if bench_data['weighted_alpha'] >= 0 else 'inverse'
+                b3.metric("⭐ Alpha (超額報酬)",
+                           f"{bench_data['weighted_alpha']:+.2f}%",
+                           delta=('跑贏 benchmark' if bench_data['weighted_alpha'] > 0 else '跑輸 benchmark'),
+                           delta_color=alpha_color)
+
+                with st.expander("📋 各檔 vs benchmark 詳細"):
+                    pos_df = bench_data['positions'].copy()
+                    pos_df = pos_df.sort_values('Alpha(%)', ascending=False)
+                    st.dataframe(
+                        pos_df.style.format({
+                            'StockReturn(%)': '{:+.2f}',
+                            'Benchmark_Return(%)': '{:+.2f}',
+                            'Alpha(%)': '{:+.2f}',
+                            'CostValue': '${:,.2f}',
+                        }).background_gradient(subset=['Alpha(%)'],
+                                                 cmap='RdYlGn', vmin=-30, vmax=30),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            st.divider()
+
+            # === 4. 產業集中度 ===
+            st.subheader("🏭 產業集中度")
+            if st.button("🔍 分析產業分布", key='sector_analyze'):
+                with st.spinner("依產業分組..."):
+                    sector_df = cache.cached_sector_concentration(df_hash, pnl_df)
+                    st.session_state['sector_df'] = sector_df
+
+            sector_df = st.session_state.get('sector_df')
+            if sector_df is not None and not sector_df.empty:
+                sec_col1, sec_col2 = st.columns([2, 3])
+                with sec_col1:
+                    st.dataframe(
+                        sector_df[['Sector', 'Count', 'TotalValue', 'Weight(%)']].rename(columns={
+                            'Sector': '產業', 'Count': '檔數',
+                            'TotalValue': '總市值', 'Weight(%)': '佔比(%)',
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                with sec_col2:
+                    chart_df = sector_df.set_index('Sector')[['Weight(%)']]
+                    st.bar_chart(chart_df, height=300)
+
+                # 集中度警告
+                top_sector_weight = sector_df.iloc[0]['Weight(%)']
+                if top_sector_weight > 50:
+                    st.warning(
+                        f"⚠️ **集中度高**:{sector_df.iloc[0]['Sector']} 佔 "
+                        f"**{top_sector_weight:.1f}%**,單一產業曝險過高。"
+                    )
+                elif top_sector_weight > 35:
+                    st.info(
+                        f"💡 {sector_df.iloc[0]['Sector']} 佔 {top_sector_weight:.1f}%,"
+                        f"屬中等集中度,建議留意分散。"
+                    )
+
+            st.divider()
+
+            # === 5. AI 整體解讀 ===
+            if use_ai:
+                st.subheader("🤖 AI 投資組合健診")
+                if st.button("🩺 啟動健診", key='portfolio_ai', type='primary'):
+                    with st.spinner("Claude 分析中..."):
+                        context = f"""【整體摘要】
+總投入: ${summary['total_cost']:,.2f}
+目前市值: ${summary['total_market_value']:,.2f}
+總損益: ${summary['total_pnl']:,.2f} ({summary['total_pnl_pct']:+.2f}%)
+持倉檔數: {summary['n_positions']}
+獲利:{summary['n_winners']} 檔,虧損:{summary['n_losers']} 檔
+
+【個別持倉】
+{display_pnl[['Ticker', 'Shares', 'CostBasis', 'CurrentPrice', 'MarketValue', 'PnL', 'PnL_Pct', 'Weight(%)']].to_string(index=False)}
+
+【vs Benchmark】
+{bench_data if bench_data else '尚未計算'}
+
+【產業集中度】
+{sector_df.to_string(index=False) if sector_df is not None and not sector_df.empty else '尚未分析'}
+"""
+                        ai_result = deep_analysis_with_claude(
+                            prompt="""請對這份投資組合做專業健診:
+
+1. **整體表現評價**:報酬率、勝率、有沒有跑贏 benchmark
+2. **持倉品質分析**:贏家為什麼贏?輸家為什麼輸?
+3. **風險集中度**:
+   - 產業集中度高低
+   - 單一持倉佔比是否過高
+   - 是否過度押注於某一類股(成長/價值/科技/景氣循環)
+4. **再平衡建議**:
+   - 是否有需要減倉的部位(獲利了結 / 停損)
+   - 缺乏哪些類型的曝險
+5. **觀察點與行動**:
+   - 哪些檔需要密切追蹤?(財報、新聞、技術面)
+   - 是否需要設定動態停損?""",
+                            context_data=context,
+                            api_key=claude_key,
+                            max_tokens=3500,
+                        )
+                        st.session_state['portfolio_ai_result'] = ai_result
+
+                if 'portfolio_ai_result' in st.session_state:
+                    st.markdown(st.session_state['portfolio_ai_result'])
+                    if st.button("💾 儲存此分析", key='save_portfolio_ai'):
+                        sa.save_analysis(
+                            category='portfolio_health',
+                            title=f"組合健診 - {datetime.now().strftime('%Y-%m-%d')}",
+                            content=st.session_state['portfolio_ai_result'],
+                            metadata={
+                                'total_pnl_pct': summary['total_pnl_pct'],
+                                'n_positions': summary['n_positions'],
+                            },
+                        )
+                        st.success("✓ 已儲存")
+
+    # === 6. 更新現有股票持倉 ===
+    st.divider()
+    with st.expander("📝 更新現有股票持倉"):
+        st.caption("選一檔已在清單中的股票,填入持倉資訊")
+        all_tickers = wl.get_tickers()
+        if all_tickers:
+            upd_ticker = st.selectbox("選擇股票", all_tickers, key='upd_holding_tk')
+            cur_row = wl.get_watchlist_df()[wl.get_watchlist_df()['Ticker'] == upd_ticker]
+            if not cur_row.empty:
+                cur = cur_row.iloc[0]
+                u1, u2, u3 = st.columns(3)
+                with u1:
+                    upd_shares = st.number_input("股數", min_value=0.0,
+                                                  value=float(cur.get('Shares', 0) or 0),
+                                                  step=1.0, key='upd_shares')
+                with u2:
+                    upd_cost = st.number_input("每股成本 ($)", min_value=0.0,
+                                                value=float(cur.get('CostBasis', 0) or 0),
+                                                step=0.01, key='upd_cost')
+                with u3:
+                    pdate_str = cur.get('PurchaseDate', '')
+                    try:
+                        default_date = pd.to_datetime(pdate_str).date() if pdate_str else None
+                    except Exception:
+                        default_date = None
+                    upd_pdate = st.date_input("買入日", value=default_date, key='upd_pdate')
+
+                if st.button("💾 更新", key='upd_holding_btn', type='primary'):
+                    pdate_save = upd_pdate.strftime('%Y-%m-%d') if upd_pdate else ''
+                    wl.update_holdings(upd_ticker, upd_shares, upd_cost, pdate_save)
+                    st.success(f"✓ {upd_ticker} 持倉已更新")
+                    st.rerun()
+
+
+# ============================================================================
+# Tab 3:財報 & 股息 (僅針對清單)
+# ============================================================================
+
+with tab3:
     st.header("🏢 我的清單財報 & 股息")
 
     groups_with_tickers = [g for g in wl.get_all_groups() if wl.get_tickers(g)]
@@ -457,10 +748,10 @@ with tab2:
 
 
 # ============================================================================
-# Tab 3:公司研究
+# Tab 4:公司研究
 # ============================================================================
 
-with tab3:
+with tab4:
     st.header("🔍 公司深度研究")
 
     all_tickers = wl.get_tickers()
@@ -597,27 +888,151 @@ with tab3:
                     st.write(rec_text)
                     st.divider()
 
-                # === 5. 近期新聞 ===
+                # === 5. 近期新聞 + 情緒分析 ===
                 news = st.session_state.get('news', [])
                 if news and 'error' not in news[0]:
-                    st.subheader("📰 近期新聞")
-                    for n in news:
+                    news_header_col1, news_header_col2 = st.columns([3, 1])
+                    with news_header_col1:
+                        st.subheader("📰 近期新聞")
+                    with news_header_col2:
+                        if use_ai:
+                            if st.button("🎭 情緒分析", key='news_sentiment',
+                                          use_container_width=True):
+                                with st.spinner("Claude 評分中..."):
+                                    from data_sentiment import (score_news_batch,
+                                                                  save_sentiment_snapshot)
+                                    scored = score_news_batch(news, tk, claude_key)
+                                    snapshot = save_sentiment_snapshot(tk, scored)
+                                    st.session_state[f'sentiment_{tk}'] = {
+                                        'scored': scored,
+                                        'avg': snapshot.get('avg_score', 0),
+                                    }
+
+                    # 顯示情緒摘要
+                    sentiment_data = st.session_state.get(f'sentiment_{tk}')
+                    if sentiment_data:
+                        from data_sentiment import interpret_sentiment, get_sentiment_history
+                        avg = sentiment_data['avg']
+                        label, _ = interpret_sentiment(avg, len(sentiment_data['scored']))
+
+                        s_col1, s_col2 = st.columns([2, 3])
+                        with s_col1:
+                            st.metric("📊 整體情緒", label)
+                        with s_col2:
+                            # 歷史走勢圖
+                            hist = get_sentiment_history(tk)
+                            if len(hist) >= 2:
+                                hist_df = pd.DataFrame(hist)
+                                hist_df['date'] = pd.to_datetime(hist_df['date'])
+                                hist_df = hist_df.set_index('date')[['avg_score']]
+                                st.caption("情緒歷史走勢")
+                                st.line_chart(hist_df, height=120)
+                            else:
+                                st.caption("💡 多次評分後可看到情緒走勢")
+
+                    # 顯示新聞清單(含個別分數)
+                    scored_news = sentiment_data['scored'] if sentiment_data else news
+                    for i, n in enumerate(scored_news):
                         with st.container():
                             cn1, cn2 = st.columns([5, 1])
                             with cn1:
                                 title = n.get('title', '')
                                 link = n.get('link', '')
+                                # 加上情緒分數
+                                score_str = ''
+                                if 'score' in n:
+                                    s = n['score']
+                                    emoji = '🟢' if s > 0.15 else ('🔴' if s < -0.15 else '⚪')
+                                    score_str = f" {emoji} `{s:+.2f}`"
                                 if link:
-                                    st.markdown(f"**[{title}]({link})**")
+                                    st.markdown(f"**[{title}]({link})**{score_str}")
                                 else:
-                                    st.markdown(f"**{title}**")
+                                    st.markdown(f"**{title}**{score_str}")
                                 if n.get('summary'):
                                     st.caption(n['summary'][:200] + ('...' if len(n.get('summary', '')) > 200 else ''))
+                                if n.get('reason'):
+                                    st.caption(f"💭 {n['reason']}")
                             with cn2:
                                 st.caption(f"📅 {n.get('date', 'N/A')}")
                                 st.caption(f"📰 {n.get('publisher', 'N/A')}")
                             st.markdown("---")
                     st.divider()
+
+                # === 5.5 同業比較 ===
+                st.subheader("⚖️ 同業比較")
+                st.caption("看這家公司在同產業中的位置(估值、品質、成長)")
+
+                if st.button("🔍 抓取同業資料", key='load_peers'):
+                    with st.spinner("尋找同業並抓取財務資料..."):
+                        peers_info = cache.cached_get_peers(tk, max_peers=8)
+                        st.session_state[f'peers_info_{tk}'] = peers_info
+                        if 'peers' in peers_info and peers_info['peers']:
+                            compare_df = cache.cached_compare_peers(tk, tuple(peers_info['peers']))
+                            st.session_state[f'peers_compare_{tk}'] = compare_df
+
+                peers_info = st.session_state.get(f'peers_info_{tk}')
+                compare_df = st.session_state.get(f'peers_compare_{tk}')
+
+                if peers_info:
+                    if 'error' in peers_info:
+                        st.warning(f"無法取得同業資料:{peers_info['error']}")
+                    elif not peers_info.get('peers'):
+                        st.info(f"找不到 {tk} 的明確同業。產業:{peers_info.get('industry', 'N/A')}")
+                    else:
+                        st.caption(
+                            f"產業:**{peers_info['industry']}** · "
+                            f"找到 {peers_info['peer_count']} 家同業"
+                        )
+
+                if compare_df is not None and not compare_df.empty:
+                    # 排名計算
+                    from data_peers import compute_target_ranking
+                    rankings = compute_target_ranking(compare_df, tk)
+
+                    # 關鍵排名卡片
+                    if rankings:
+                        st.markdown("**📊 在同業中的排名**")
+                        key_metrics = [('P/E', '估值'), ('ROE(%)', '股東報酬'),
+                                        ('NetMargin(%)', '淨利率'), ('RevGrowth(%)', '營收成長')]
+                        rank_cols = st.columns(len(key_metrics))
+                        for col, (metric, label) in zip(rank_cols, key_metrics):
+                            if metric in rankings:
+                                r = rankings[metric]
+                                # 百分位 → 顏色
+                                pct = r['percentile']
+                                if pct >= 75:
+                                    icon = '🟢'
+                                elif pct >= 50:
+                                    icon = '🟡'
+                                else:
+                                    icon = '🔴'
+                                col.metric(
+                                    label=f"{icon} {label}",
+                                    value=f"第 {r['rank']} 名 / {r['total']}",
+                                    delta=f"P{pct:.0f}（{r['value']:.2f}）",
+                                    delta_color='off',
+                                )
+
+                    # 完整對照表(高亮目標公司)
+                    st.markdown("**完整比較表**")
+                    display_cols = ['Ticker', 'Name', 'Price', 'MktCap($B)',
+                                     'P/E', 'Forward_P/E', 'ROE(%)',
+                                     'NetMargin(%)', 'RevGrowth(%)', 'D/E', 'DivYield(%)']
+                    show_df = compare_df[[c for c in display_cols if c in compare_df.columns]].copy()
+
+                    # 高亮目標公司
+                    def highlight_target(row):
+                        return ['background-color: #fffbe6' if row['Ticker'] == tk.upper()
+                                else '' for _ in row]
+
+                    st.dataframe(
+                        show_df.style.apply(highlight_target, axis=1),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    st.caption(f"💡 黃色標記行為 {tk}(目標公司)")
+
+                st.divider()
 
                 # === 6. AI 深度分析 ===
                 st.subheader("🤖 AI 深度公司分析")
@@ -688,10 +1103,10 @@ with tab3:
 
 
 # ============================================================================
-# Tab 4:經濟日曆
+# Tab 5:經濟日曆
 # ============================================================================
 
-with tab4:
+with tab5:
     st.header("📅 經濟事件日曆")
     st.caption("FOMC、CPI、PCE、就業報告、GDP 等重要事件")
 
@@ -728,10 +1143,10 @@ with tab4:
 
 
 # ============================================================================
-# Tab 5:宏觀儀表板
+# Tab 6:宏觀儀表板
 # ============================================================================
 
-with tab5:
+with tab6:
     st.header("🏛️ 宏觀經濟儀表板")
 
     if st.button("🔄 載入宏觀數據", type="primary", key='macro_load'):
@@ -764,10 +1179,10 @@ with tab5:
 
 
 # ============================================================================
-# Tab 6:市場結構(殖利率曲線 + 期貨基差)
+# Tab 7:市場結構(殖利率曲線 + 期貨基差)
 # ============================================================================
 
-with tab6:
+with tab7:
     st.header("📊 市場結構")
     st.caption("觀察殖利率曲線形狀與期貨基差,洞察市場預期與情緒")
 
@@ -1033,10 +1448,10 @@ with tab6:
 
 
 # ============================================================================
-# Tab 7:技術指標
+# Tab 8:技術指標
 # ============================================================================
 
-with tab7:
+with tab8:
     st.header("📈 技術指標")
     st.caption("RSI、MACD、KD、布林通道、移動平均 — 找進場時機")
 
@@ -1356,10 +1771,10 @@ Bollinger: {ind['Bollinger']['signal']}
 
 
 # ============================================================================
-# Tab 8:分析中心
+# Tab 9:分析中心
 # ============================================================================
 
-with tab8:
+with tab9:
     st.header("🤖 分析中心")
 
     analysis_type = st.selectbox("分析類型", [
