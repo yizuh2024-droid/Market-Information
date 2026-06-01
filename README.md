@@ -1,49 +1,48 @@
-# 金融資訊 Agent 📈 (Watchlist 版本)
+# 📈 finagent FINAL — 金融資訊整合工具
 
-以**自選觀察清單**為核心的金融資訊工具。整合宏觀經濟、財報日期、AI 分析。
-
-## 🎯 核心理念
-
-不再掃描整個 S&P 500 — 你只追蹤**自己關心的公司**。
-清單會自動存檔到 `watchlist.json`,下次打開繼續用。
-
-## 🌟 功能總覽 (6 個分頁)
-
-### 1️⃣ 📋 我的清單(核心)
-- 自選股票,單檔加入或批次加入(逗號 / 換行分隔)
-- 支援**群組分類**(例:Tech、Finance、長期持有、觀察中)
-- 每檔可寫**自訂備註**(直接在表格中編輯)
-- 匯出 / 匯入 CSV — 方便備份、跨裝置同步
-
-### 2️⃣ 🏢 財報 & 股息
-- 只抓**你清單上的公司**的財報日期、股息日
-- 可選「所有群組合併」或單一群組
-- 自動分區顯示「即將到來」和「最近發布過」
-
-### 3️⃣ 🔍 公司研究
-- 從清單下拉選擇,或臨時查詢非清單股票
-- 一頁看完基本面快照:P/E、ROE、淨利率、股息率
-- 一鍵 AI 深度分析
-
-### 4️⃣ 📅 經濟日曆
-- FOMC、CPI、PCE、NFP、GDP 等宏觀事件日期
-- 自動推算固定規律(NFP = 每月第一個週五等)
-- FOMC 行事曆內建到 2026 年
-
-### 5️⃣ 🏛️ 宏觀儀表板
-- 18 個 FRED 指標的即時快照
-- 通膨、就業、利率、殖利率、VIX 等
-- 趨勢圖視覺化
-
-### 6️⃣ 🤖 分析中心
-- 宏觀指標分析(規則型 + AI 雙層)
-- FOMC 聲明分析(貼上即解讀鴿/鷹派)
-- **「我的清單整體狀況」**:一鍵掃描全部清單,做估值/品質比較
-- 自由提問:把任何已抓取的資料丟給 Claude 提問
+整合**宏觀經濟、財報追蹤、技術指標、投資組合、AI 分析**的 Streamlit 金融工具。
 
 ---
 
-## 🚀 安裝與啟動
+## 🌟 完整功能總覽
+
+### 9 大分頁
+
+| 分頁 | 功能 |
+|------|------|
+| 📋 **我的清單** | 自選股票清單 · 多群組 · 編輯模式多選刪除 · 智能搜尋 |
+| 💼 **投資組合** | 持倉損益追蹤 · vs S&P 500 Alpha · 產業集中度 · AI 健診 |
+| 🏢 **財報 & 股息** | 清單股票的財報日 · 除息日 |
+| 🔍 **公司研究** | 基本面 · 8 季財報趨勢 · 新聞情緒 · 分析師目標價 · 同業比較 · AI 深度分析 |
+| 📅 **經濟日曆** | FOMC、CPI、PCE、NFP、GDP 等重要事件 |
+| 🏛️ **宏觀儀表板** | 18 個 FRED 指標 · 即時快照 · 趨勢圖 |
+| 📊 **市場結構** | 殖利率曲線(倒掛偵測) · 股指期貨基差(升貼水) |
+| 📈 **技術指標** | RSI · MACD · KD · 布林 · 均線 · 「基本面好 + RSI 低」策略掃描 |
+| 🤖 **分析中心** | AI 整合分析 · 自由提問 · 📚 已儲存分析管理 |
+
+### 智能搜尋(三層備援)
+- yfinance.Search → HTTP 端點 → 內建 150+ 大型股字典
+- 即使 Yahoo API 被擋,常見股票還是搜得到
+
+### AI 整合(Claude Opus)
+- 公司深度分析(整合財報 + 新聞 + 分析師)
+- 宏觀指標解讀(含 10 年歷史脈絡)
+- FOMC 聲明分析
+- 投資組合健診
+- 技術 + 基本面整合進場建議
+- 自由提問
+- **所有分析都可儲存,日後不用重跑**
+
+### 快取系統(大幅提速)
+- 公司基本面:1 小時
+- 季度財報:24 小時
+- 股價:5 分鐘
+- 期貨基差:1 分鐘
+- 側邊欄有「清除快取」按鈕
+
+---
+
+## 🚀 快速啟動
 
 ```bash
 cd finagent
@@ -51,21 +50,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-瀏覽器會自動打開 `http://localhost:8501`
+或部署到 Streamlit Cloud(免費):
+1. push 到 GitHub
+2. share.streamlit.io 連結 repo
+3. Main file: `app.py`
 
-### API Key 設定(選填)
+### API Keys(選填,在側邊欄填)
 
 | API | 用途 | 申請 |
 |-----|------|------|
-| **FRED** | 宏觀資料(免費,建議申請) | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) |
-| **Anthropic** | AI 深度分析(選用) | [console.anthropic.com](https://console.anthropic.com) |
-
-兩者都可以在 Streamlit 側邊欄直接填入,或設環境變數:
-
-```bash
-export FRED_API_KEY=你的key
-export ANTHROPIC_API_KEY=sk-ant-你的key
-```
+| **FRED** | 宏觀資料(免費) | fred.stlouisfed.org/docs/api/api_key.html |
+| **Anthropic** | AI 深度分析 | console.anthropic.com |
 
 ---
 
@@ -73,85 +68,104 @@ export ANTHROPIC_API_KEY=sk-ant-你的key
 
 ```
 finagent/
-├── app.py                  # Streamlit 主介面
-├── watchlist.py           # ⭐ 觀察清單管理(JSON 儲存)
-├── data_calendar.py        # 經濟事件日曆
-├── data_earnings.py        # 財報、股息、公司基本面
-├── data_fred.py           # FRED 宏觀數據 API
-├── analyzer.py            # 規則型 + AI 分析
-├── watchlist.json          # ⭐ 你的清單存檔(自動產生)
+├── app.py                       # Streamlit 主介面(2000+ 行)
+├── watchlist.py                 # 觀察清單管理
+├── portfolio.py                 # 投資組合損益追蹤
+├── data_search.py               # 智能搜尋(3 層備援)
+├── data_earnings.py             # 財報、股息、公司基本面(含 curl_cffi 防擋)
+├── data_calendar.py             # 經濟事件日曆
+├── data_fred.py                 # FRED 宏觀數據
+├── data_market_structure.py     # 殖利率曲線 + 期貨基差
+├── data_technical.py            # 技術指標計算
+├── data_peers.py                # 同業比較
+├── data_sentiment.py            # 新聞情緒分析
+├── analyzer.py                  # AI 分析(規則 + Claude)
+├── saved_analyses.py            # 已儲存 AI 分析的管理
+├── cached_data.py               # 快取包裝層
+├── debug_financials.py          # 財報抓取診斷工具(獨立啟動)
+├── tests/test_basic.py          # 單元測試
 ├── requirements.txt
-└── README.md
+├── check.sh                     # 本地檢查腳本
+└── .gitignore
 ```
 
 ---
 
 ## 💡 典型工作流
 
-### 場景 1:第一次使用,建立你的觀察名單
+### 場景 1:研究一檔股票要不要買
 
-1. 進入「**📋 我的清單**」
-2. 先建群組:在「群組管理」輸入「Tech」「Finance」「ETFs」等
-3. 切到對應群組,用「**📦 批次新增**」一次貼入:
-   ```
-   AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA
-   ```
-4. 完成 — 之後所有分頁都以這份清單為基礎
+1. **🔍 公司研究** 選股票 → 抓資料
+2. 看基本面卡片(P/E、ROE、淨利率)
+3. 看「📈 股價表現」(1W~1Y 多時間框架)
+4. 看「💰 近 8 季財報趨勢」(營收、淨利、毛利率走勢)
+5. 看「🎯 分析師目標價」(上漲空間多少?)
+6. **點「🎭 情緒分析」** → AI 對近期新聞打分
+7. **點「🔍 抓取同業資料」** → 看在同業中是貴還是便宜
+8. **📈 技術指標** → 「🔍 單一深度」看 RSI、MACD 等
+9. 滿意的話按「🚀 啟動深度分析」+「🤖 AI 整合解讀」
+10. **「💾 儲存」** 存起來
 
-### 場景 2:財報季前,看接下來誰要公布
+### 場景 2:每週檢視投資組合
 
-1. 切到「**🏢 財報 & 股息**」
-2. 選範圍(例如只看 Tech 群組)
-3. 按「載入」— 馬上看到接下來 180 天所有財報日
+1. **💼 投資組合** 看整體損益、Alpha vs 標普
+2. 看「最大贏家」要不要獲利了結?「最大輸家」要不要停損?
+3. 看「🏭 產業集中度」是否過度集中
+4. 「🩺 AI 健診」拿到客觀建議
 
-### 場景 3:CPI 公布後,想知道對清單的影響
+### 場景 3:CPI / FOMC 公布日
 
-1. 切到「**🤖 分析中心**」→「**宏觀指標分析**」→ CPI → 取得規則型/AI 解讀
-2. 然後到「**我的清單整體狀況**」→ 掃描清單 → 看到整份清單的 P/E、ROE
-3. 切到「**自由提問**」→ 勾選「我的清單基本面 + 宏觀儀表板」
-4. 提問:「以目前的通膨與利率環境,我清單中哪些公司估值偏貴需注意?」
+1. **🤖 分析中心** → 「宏觀指標分析」選 CPI → 一鍵 AI 解讀(含 10 年脈絡)
+2. FOMC 開完會後,複製聲明 → 「FOMC 聲明分析」 → 鴿/鷹判讀
+3. **📊 市場結構** 看殖利率曲線有沒有倒掛
+4. **💾 儲存分析** 日後回顧
 
-### 場景 4:研究單一公司
+### 場景 4:找買進機會
 
-1. 「**🔍 公司研究**」→ 從清單下拉選 → 一頁看完基本面
-2. 按「AI 深度分析」→ Claude 整理出健康度、估值、風險
-
----
-
-## 🔧 客製化
-
-### 加更多 FRED 指標
-
-`data_fred.py` 的 `FRED_SERIES` 字典加一行:
-
-```python
-'我的指標': ('FRED_SERIES_ID', '中文描述'),
-```
-
-查 series ID:https://fred.stlouisfed.org/
-
-### 加更多經濟事件規則
-
-編輯 `data_calendar.py` 的 `get_economic_releases()` 中的 `rules` 列表。
-
-### 連接量化回測
-
-`analyzer.deep_analysis_with_claude()` 可獨立呼叫 — 把回測結果丟給它做分析:
-
-```python
-from analyzer import deep_analysis_with_claude
-result = deep_analysis_with_claude(
-    prompt="這個回測的優缺點?",
-    context_data=trades_df.to_string(),
-)
-```
+1. **📈 技術指標** → 「🎯 找出超賣機會」
+2. 設定:ROE > 12% · P/E < 30 · RSI < 35
+3. 一鍵掃描清單,找「基本面好 + 技術回檔」的標的
 
 ---
 
-## ⚠️ 注意事項
+## ⚙️ 個人資料儲存
 
-- **經濟事件日期是按規律推算的**,特殊節日調整需手動校正
-- **FOMC 內建到 2026 年**,之後更新 `data_calendar.py`
-- **基本面資料是即時快照**,不是時間序列
-- **清單存檔在本地** `watchlist.json` — 換電腦時記得備份或用「匯出 CSV」
-- **本工具不構成投資建議**
+以下檔案儲存在你的本地,**不會上傳到 GitHub**(已加入 .gitignore):
+
+- `watchlist.json` — 你的清單與持倉
+- `saved_analyses.json` — AI 儲存的分析
+- `sentiment_history.json` — 新聞情緒歷史
+
+要備份的話可以:
+- 「📋 我的清單」分頁有「⬇️ 匯出 CSV」
+- 複製這三個 .json 檔到雲端硬碟
+
+---
+
+## 🆘 常見問題
+
+**Q: 財報抓不到怎麼辦?**
+- 點側邊欄「🔄 清除所有快取」重試
+- 點「📅 嘗試載入年度財報」fallback
+- 如果還是不行,Streamlit Cloud 新增一個 app,Main file 設 `debug_financials.py`,看診斷結果
+
+**Q: AI 分析顯示「未設 API key」**
+- 側邊欄填 ANTHROPIC_API_KEY,或在 Streamlit Cloud 的 Secrets 設定:
+  ```toml
+  ANTHROPIC_API_KEY = "sk-ant-..."
+  FRED_API_KEY = "..."
+  ```
+
+**Q: 搜尋找不到股票**
+- 三層備援,常見股票一定找得到
+- 如果是冷門股,試直接輸入代號
+
+**Q: 想清空全部資料重來**
+- 刪掉 `watchlist.json`、`saved_analyses.json`、`sentiment_history.json` 三個檔案
+
+---
+
+## ⚠️ 免責聲明
+
+本工具僅供研究與學習用途,不構成任何投資建議。
+資料來源:Yahoo Finance、FRED、Federal Reserve、Anthropic Claude。
